@@ -542,6 +542,9 @@ func runLogs(ctx context.Context, cfg *Config, args []string, stdout, stderr io.
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return 0
+		}
 		fmt.Fprintf(stderr, "logs: %v\n", err)
 		return 1
 	}
@@ -592,6 +595,9 @@ func runExec(ctx context.Context, cfg *Config, args []string, stdout, stderr io.
 		Stdout: stdout,
 	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return 0
+		}
 		fmt.Fprintf(stderr, "exec attach: %v\n", err)
 		return 1
 	}

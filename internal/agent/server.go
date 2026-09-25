@@ -383,8 +383,20 @@ func (s *Server) handleLogsWS(w http.ResponseWriter, r *http.Request, id string)
 		return
 	}
 	defer conn.Close()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	// A quiet `docker logs --follow` may never write again. Keep reading the
+	// WebSocket so a disconnected client cancels the Docker subprocess promptly.
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				cancel()
+				return
+			}
+		}
+	}()
 
-	reader, err := s.docker.ContainerLogs(r.Context(), id, r.URL.Query().Get("follow") == "1")
+	reader, err := s.docker.ContainerLogs(ctx, id, r.URL.Query().Get("follow") == "1")
 	if err != nil {
 		writeWSError(conn, "docker_error", err.Error())
 		return

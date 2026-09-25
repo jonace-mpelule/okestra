@@ -141,6 +141,9 @@ func (a *API) AttachExec(ctx context.Context, containerID, execID string, stdio 
 		return err
 	}
 	defer conn.Close()
+	done := make(chan struct{})
+	defer close(done)
+	go closeWebSocketOnCancel(ctx, conn, done)
 
 	if stdio.Stdin != nil {
 		go func() {
@@ -164,6 +167,9 @@ func (a *API) AttachExec(ctx context.Context, containerID, execID string, stdio 
 	for {
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			var closeErr *websocket.CloseError
 			if errors.As(err, &closeErr) && closeErr.Code == protocol.ExecFailureCloseCode {
 				return fmt.Errorf("remote exec: %s", closeErr.Text)
@@ -681,9 +687,15 @@ func (a *API) readJSONStream(ctx context.Context, wsURL string, fn func(protocol
 		return err
 	}
 	defer conn.Close()
+	done := make(chan struct{})
+	defer close(done)
+	go closeWebSocketOnCancel(ctx, conn, done)
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
 		var env protocol.StreamEnvelope
@@ -700,6 +712,14 @@ func (a *API) readJSONStream(ctx context.Context, wsURL string, fn func(protocol
 		if env.Type == "eof" {
 			return nil
 		}
+	}
+}
+
+func closeWebSocketOnCancel(ctx context.Context, conn *websocket.Conn, done <-chan struct{}) {
+	select {
+	case <-ctx.Done():
+		_ = conn.Close()
+	case <-done:
 	}
 }
 

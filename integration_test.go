@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jonace-mpelule/okestra/internal/agent"
 	"github.com/jonace-mpelule/okestra/internal/client"
@@ -17,6 +18,23 @@ import (
 const testToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 type integrationRuntime struct{}
+
+type blockingLogsRuntime struct {
+	integrationRuntime
+	opened chan struct{}
+	closed chan struct{}
+}
+
+func (r *blockingLogsRuntime) ContainerLogs(ctx context.Context, _ string, _ bool) (io.ReadCloser, error) {
+	reader, writer := io.Pipe()
+	close(r.opened)
+	go func() {
+		<-ctx.Done()
+		_ = writer.Close()
+		close(r.closed)
+	}()
+	return reader, nil
+}
 
 func (integrationRuntime) Ping(context.Context) error { return nil }
 func (integrationRuntime) BuildImage(_ context.Context, _ io.Reader, _ protocol.BuildRequest) (io.ReadCloser, error) {
@@ -155,5 +173,38 @@ func TestAuthenticatedClientServiceWorkflow(t *testing.T) {
 
 	if err := client.VerifySelfTestTunnel(ctx, api); err != nil {
 		t.Fatalf("tunnel self-test: %v", err)
+	}
+}
+
+func TestFollowLogsStopsOnCancellation(t *testing.T) {
+	runtime := &blockingLogsRuntime{opened: make(chan struct{}), closed: make(chan struct{})}
+	svc := agent.NewServer("127.0.0.1:0", testToken, t.TempDir(), runtime)
+	httpServer := httptest.NewServer(svc.Handler())
+	defer httpServer.Close()
+	api := client.NewAPI(protocol.AgentProfile{URL: httpServer.URL, Token: testToken})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- api.StreamLogs(ctx, "container-123", true, func(protocol.StreamEnvelope) error { return nil })
+	}()
+	select {
+	case <-runtime.opened:
+	case <-time.After(3 * time.Second):
+		t.Fatal("log stream did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("client log stream stayed blocked after cancellation")
+	}
+	select {
+	case <-runtime.closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server log process was not cancelled after client disconnect")
 	}
 }
