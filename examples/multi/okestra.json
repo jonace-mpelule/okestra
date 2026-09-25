@@ -1,0 +1,22 @@
+{
+  "name": "okestra-multi",
+  "services": {
+    "db": {
+      "image": "postgres:16-alpine",
+      "env_file": ".env",
+      "volumes": ["database:/var/lib/postgresql/data"],
+      "health": { "command": "pg_isready -U postgres", "interval_seconds": 5, "retries": 5 }
+    },
+    "cache": {
+      "image": "redis:7-alpine",
+      "volumes": ["cache:/data"],
+      "health": { "command": "redis-cli ping", "interval_seconds": 5, "retries": 5 }
+    },
+    "web": {
+      "image": "nginx:alpine",
+      "depends_on": ["db", "cache"],
+      "ports": ["8080:80"],
+      "health": { "command": "wget -q -O- http://127.0.0.1/", "interval_seconds": 5, "retries": 3 }
+    }
+  }
+}

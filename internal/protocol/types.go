@@ -3,7 +3,7 @@ package protocol
 import "time"
 
 const (
-	ProtocolVersion       = 2
+	ProtocolVersion       = 3
 	ExecFailureCloseCode  = 4000
 	ExecStdinClosedMarker = "stdin_closed"
 )
@@ -27,12 +27,48 @@ type BuildRequest struct {
 }
 
 type RunRequest struct {
-	Image       string            `json:"image"`
-	Name        string            `json:"name,omitempty"`
-	Command     []string          `json:"command,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	WorkingDir  string            `json:"working_dir,omitempty"`
-	AutoForward []PortMapping     `json:"auto_forward,omitempty"`
+	Image        string            `json:"image"`
+	Name         string            `json:"name,omitempty"`
+	Command      []string          `json:"command,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	WorkingDir   string            `json:"working_dir,omitempty"`
+	AutoForward  []PortMapping     `json:"auto_forward,omitempty"`
+	Network      string            `json:"network,omitempty"`
+	NetworkAlias string            `json:"network_alias,omitempty"`
+	Mounts       []Mount           `json:"mounts,omitempty"`
+	Restart      string            `json:"restart,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	Health       *HealthCheck      `json:"health,omitempty"`
+}
+
+type HealthCheck struct {
+	Command         string `json:"command"`
+	IntervalSeconds int    `json:"interval_seconds,omitempty"`
+	Retries         int    `json:"retries,omitempty"`
+}
+
+type Mount struct {
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"read_only,omitempty"`
+}
+
+type ContainerDetails struct {
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	Image        string            `json:"image"`
+	Status       string            `json:"status"`
+	Running      bool              `json:"running"`
+	ExitCode     int               `json:"exit_code"`
+	OOMKilled    bool              `json:"oom_killed,omitempty"`
+	Error        string            `json:"error,omitempty"`
+	Health       string            `json:"health,omitempty"`
+	RestartCount int               `json:"restart_count"`
+	Networks     []string          `json:"networks,omitempty"`
+	Ports        []string          `json:"ports,omitempty"`
+	Mounts       []Mount           `json:"mounts,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	RecentLogs   string            `json:"recent_logs,omitempty"`
 }
 
 type PortForwardRequest struct {

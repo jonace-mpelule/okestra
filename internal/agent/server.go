@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -120,6 +121,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/images/", s.auth(s.handleImageRoutes))
 	mux.HandleFunc("/v1/port-forwards", s.auth(s.handleCreatePortForward))
 	mux.HandleFunc("/v1/port-forwards/", s.auth(s.handlePortForwardStream))
+	mux.HandleFunc("/v1/projects/networks/", s.auth(s.handleProjectNetwork))
+	mux.HandleFunc("/v1/projects/volumes/", s.auth(s.handleProjectVolume))
 
 	return loggingMiddleware(mux)
 }
@@ -336,8 +339,12 @@ func (s *Server) handleContainerRoutes(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(path, "/stop"):
 		s.handleStop(w, r, strings.TrimSuffix(path, "/stop"))
+	case strings.HasSuffix(path, "/start"):
+		s.handleStart(w, r, strings.TrimSuffix(path, "/start"))
 	case strings.HasSuffix(path, "/logs/ws"):
 		s.handleLogsWS(w, r, strings.TrimSuffix(path, "/logs/ws"))
+	case strings.HasSuffix(path, "/inspect"):
+		s.handleInspect(w, r, strings.TrimSuffix(path, "/inspect"))
 	case strings.HasSuffix(path, "/exec"):
 		s.handleExecCreate(w, r, strings.TrimSuffix(path, "/exec"))
 	case strings.Contains(path, "/exec/") && strings.HasSuffix(path, "/ws"):
@@ -355,6 +362,115 @@ func (s *Server) handleContainerRoutes(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "not found")
 	}
+}
+
+func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	project, ok := s.docker.(ProjectRuntime)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "unsupported", "runtime does not support start")
+		return
+	}
+	if err := project.StartContainer(r.Context(), id); err != nil {
+		writeError(w, http.StatusBadGateway, "docker_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
+}
+
+func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	project, ok := s.docker.(ProjectRuntime)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "unsupported", "runtime does not support inspection")
+		return
+	}
+	var detail protocol.ContainerDetails
+	var err error
+	if r.URL.Query().Get("logs") == "1" {
+		if verbose, ok := s.docker.(interface {
+			InspectContainerWithLogs(context.Context, string) (protocol.ContainerDetails, error)
+		}); ok {
+			detail, err = verbose.InspectContainerWithLogs(r.Context(), id)
+		} else {
+			detail, err = project.InspectContainer(r.Context(), id)
+		}
+	} else {
+		detail, err = project.InspectContainer(r.Context(), id)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "docker_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (s *Server) handleProjectNetwork(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/v1/projects/networks/")
+	if !validProjectResource(name) {
+		writeError(w, http.StatusBadRequest, "invalid_name", "invalid Okestra network name")
+		return
+	}
+	project, ok := s.docker.(ProjectRuntime)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "unsupported", "runtime does not support projects")
+		return
+	}
+	var err error
+	switch r.Method {
+	case http.MethodPut:
+		err = project.EnsureNetwork(r.Context(), name)
+	case http.MethodDelete:
+		err = project.RemoveNetwork(r.Context(), name)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "docker_error", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleProjectVolume(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/v1/projects/volumes/")
+	if !validProjectResource(name) {
+		writeError(w, http.StatusBadRequest, "invalid_name", "invalid Okestra volume name")
+		return
+	}
+	if r.Method != http.MethodPut {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	project, ok := s.docker.(ProjectRuntime)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "unsupported", "runtime does not support projects")
+		return
+	}
+	if err := project.EnsureVolume(r.Context(), name); err != nil {
+		writeError(w, http.StatusBadGateway, "docker_error", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func validProjectResource(name string) bool {
+	if !strings.HasPrefix(name, "okestra-") || len(name) <= len("okestra-") || len(name) > 128 {
+		return false
+	}
+	for _, c := range name {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, id string) {
@@ -396,7 +512,23 @@ func (s *Server) handleLogsWS(w http.ResponseWriter, r *http.Request, id string)
 		}
 	}()
 
-	reader, err := s.docker.ContainerLogs(ctx, id, r.URL.Query().Get("follow") == "1")
+	tail := 0
+	if raw := r.URL.Query().Get("tail"); raw != "" {
+		var parseErr error
+		tail, parseErr = strconv.Atoi(raw)
+		if parseErr != nil || tail < 0 || tail > 10000 {
+			writeWSError(conn, "invalid_request", "tail must be between 0 and 10000")
+			return
+		}
+	}
+	var reader io.ReadCloser
+	if limited, ok := s.docker.(interface {
+		ContainerLogsTail(context.Context, string, bool, int) (io.ReadCloser, error)
+	}); ok {
+		reader, err = limited.ContainerLogsTail(ctx, id, r.URL.Query().Get("follow") == "1", tail)
+	} else {
+		reader, err = s.docker.ContainerLogs(ctx, id, r.URL.Query().Get("follow") == "1")
+	}
 	if err != nil {
 		writeWSError(conn, "docker_error", err.Error())
 		return

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jonace-mpelule/okestra/internal/protocol"
+	"github.com/jonace-mpelule/okestra/internal/updater"
 	"github.com/jonace-mpelule/okestra/internal/version"
 )
 
@@ -42,6 +43,16 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 	case "version":
 		fmt.Fprintf(stdout, "okestra %s (commit %s, built %s)\n", version.Version, version.Commit, version.Date)
 		return 0
+	case "upgrade", "update":
+		if len(args) > 2 || (len(args) == 2 && args[1] != "--check") {
+			fmt.Fprintln(stderr, "usage: okestra upgrade [--check]")
+			return 1
+		}
+		if err := updater.Upgrade(ctx, "okestra", len(args) == 2, stdout); err != nil {
+			fmt.Fprintf(stderr, "upgrade: %v\n", err)
+			return 1
+		}
+		return 0
 	case "init":
 		return runInitCommands(args[1:], stdout, stderr)
 	case "agent", "server":
@@ -57,6 +68,35 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 		return runStatus(ctx, cfg, stdout, stderr)
 	case "doctor":
 		return runDoctor(ctx, cfg, stdout, stderr)
+	case "project":
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "usage: okestra project <init|ps>")
+			return 1
+		}
+		switch args[1] {
+		case "init":
+			return runProjectInit(args[2:], stdout, stderr)
+		case "ps":
+			return runProjectPS(ctx, cfg, args[2:], stdout, stderr)
+		}
+		fmt.Fprintln(stderr, "usage: okestra project <init|ps>")
+		return 1
+	case "up":
+		return runProjectUp(ctx, cfg, args[1:], stdout, stderr)
+	case "down":
+		return runProjectDown(ctx, cfg, args[1:], stdout, stderr)
+	case "connect":
+		return runConnect(ctx, cfg, args[1:], stdout, stderr)
+	case "disconnect":
+		return runDisconnect(args[1:], stdout, stderr)
+	case "connections":
+		return runConnections(stdout, stderr)
+	case "watch":
+		return runWatch(ctx, cfg, args[1:], stdout, stderr)
+	case "__forward":
+		return runForwardDaemon(ctx, cfg, args[1:], stderr)
+	case "why":
+		return runWhy(ctx, cfg, args[1:], stdout, stderr)
 	case "build":
 		return runBuild(ctx, cfg, args[1:], stdout, stderr)
 	case "run":
@@ -524,15 +564,21 @@ func runLogs(ctx context.Context, cfg *Config, args []string, stdout, stderr io.
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var follow bool
+	var tail int
 	fs.BoolVar(&follow, "f", false, "follow")
+	fs.IntVar(&tail, "tail", 0, "show only the last N lines")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: okestra logs [-f] <container>")
+		fmt.Fprintln(stderr, "usage: okestra logs [-f] [--tail N] <container>")
 		return 1
 	}
-	err := api.StreamLogs(ctx, fs.Arg(0), follow, func(env protocol.StreamEnvelope) error {
+	if tail < 0 || tail > 10000 {
+		fmt.Fprintln(stderr, "--tail must be between 0 and 10000")
+		return 1
+	}
+	err := api.StreamLogsTail(ctx, fs.Arg(0), follow, tail, func(env protocol.StreamEnvelope) error {
 		if len(env.Data) > 0 {
 			_, _ = stdout.Write(env.Data)
 		}
@@ -760,6 +806,7 @@ func shortID(id string) string {
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "okestra commands:")
 	fmt.Fprintln(w, "  version")
+	fmt.Fprintln(w, "  upgrade [--check]")
 	fmt.Fprintln(w, "  init service [--addr addr] [--data-dir dir] [--token token]")
 	fmt.Fprintln(w, "  server add --name <name> --url <url> --token <token>")
 	fmt.Fprintln(w, "  server use <name>")
@@ -768,10 +815,15 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  config path")
 	fmt.Fprintln(w, "  status")
 	fmt.Fprintln(w, "  doctor")
+	fmt.Fprintln(w, "  project init | project ps")
+	fmt.Fprintln(w, "  up [--build] [--recreate] | down")
+	fmt.Fprintln(w, "  connect | disconnect | connections")
+	fmt.Fprintln(w, "  watch [--service name]")
+	fmt.Fprintln(w, "  why <container>")
 	fmt.Fprintln(w, "  build -t <tag> [--build-arg KEY=VALUE] [context]")
 	fmt.Fprintln(w, "  run [--name name] [-p local:remote] [--env-file path] [--env KEY=VALUE] <image> [cmd...]")
 	fmt.Fprintln(w, "  ps")
-	fmt.Fprintln(w, "  logs [-f] <container>")
+	fmt.Fprintln(w, "  logs [-f] [--tail N] <container>")
 	fmt.Fprintln(w, "  exec [-it] <container> <command...>")
 	fmt.Fprintln(w, "  stop <container>")
 	fmt.Fprintln(w, "  rm <container>")

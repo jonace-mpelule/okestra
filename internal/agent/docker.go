@@ -29,6 +29,24 @@ type Runtime interface {
 	ResolveContainerPort(ctx context.Context, id string, port int) (string, error)
 }
 
+// ProjectRuntime is optional so older in-memory runtimes can still serve the
+// basic API. Production uses DockerClient, which implements all methods.
+type ProjectRuntime interface {
+	EnsureNetwork(context.Context, string) error
+	RemoveNetwork(context.Context, string) error
+	EnsureVolume(context.Context, string) error
+	InspectContainer(context.Context, string) (protocol.ContainerDetails, error)
+	StartContainer(context.Context, string) error
+}
+
+func (d *DockerClient) StartContainer(ctx context.Context, id string) error {
+	out, err := d.command(ctx, "start", id).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("start container: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 type ExecStream interface {
 	io.ReadWriteCloser
 	CloseInput() error
@@ -73,6 +91,15 @@ func (d *DockerClient) BuildImage(ctx context.Context, buildContext io.Reader, r
 }
 
 func (d *DockerClient) RunContainer(ctx context.Context, req protocol.RunRequest) (string, error) {
+	args := runContainerArgs(req)
+	out, err := d.command(ctx, args...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func runContainerArgs(req protocol.RunRequest) []string {
 	args := []string{"run", "-d"}
 	if req.Name != "" {
 		args = append(args, "--name", req.Name)
@@ -80,16 +107,168 @@ func (d *DockerClient) RunContainer(ctx context.Context, req protocol.RunRequest
 	if req.WorkingDir != "" {
 		args = append(args, "--workdir", req.WorkingDir)
 	}
+	if req.Network != "" {
+		args = append(args, "--network", req.Network)
+	}
+	if req.NetworkAlias != "" {
+		args = append(args, "--network-alias", req.NetworkAlias)
+	}
+	if req.Restart != "" {
+		args = append(args, "--restart", req.Restart)
+	}
+	if req.Health != nil {
+		args = append(args, "--health-cmd", req.Health.Command)
+		if req.Health.IntervalSeconds > 0 {
+			args = append(args, "--health-interval", strconv.Itoa(req.Health.IntervalSeconds)+"s")
+		}
+		if req.Health.Retries > 0 {
+			args = append(args, "--health-retries", strconv.Itoa(req.Health.Retries))
+		}
+	}
+	for _, mount := range req.Mounts {
+		spec := "type=volume,source=" + mount.Source + ",target=" + mount.Target
+		if mount.ReadOnly {
+			spec += ",readonly"
+		}
+		args = append(args, "--mount", spec)
+	}
+	labelKeys := make([]string, 0, len(req.Labels))
+	for key := range req.Labels {
+		labelKeys = append(labelKeys, key)
+	}
+	sort.Strings(labelKeys)
+	for _, key := range labelKeys {
+		args = append(args, "--label", key+"="+req.Labels[key])
+	}
 	for k, v := range req.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
 	args = append(args, req.Image)
 	args = append(args, req.Command...)
-	out, err := d.command(ctx, args...).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	return args
+}
+
+func (d *DockerClient) EnsureNetwork(ctx context.Context, name string) error {
+	if out, err := d.command(ctx, "network", "inspect", "-f", "{{ index .Labels \"dev.okestra.managed\" }}", name).CombinedOutput(); err == nil {
+		if strings.TrimSpace(string(out)) != "true" {
+			return fmt.Errorf("network %s already exists but is not managed by Okestra", name)
+		}
+		return nil
 	}
-	return strings.TrimSpace(string(out)), nil
+	out, err := d.command(ctx, "network", "create", "--driver", "bridge", "--label", "dev.okestra.managed=true", name).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("create network: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (d *DockerClient) RemoveNetwork(ctx context.Context, name string) error {
+	if out, err := d.command(ctx, "network", "inspect", "-f", "{{ index .Labels \"dev.okestra.managed\" }}", name).CombinedOutput(); err != nil {
+		if strings.Contains(string(out), "No such network") {
+			return nil
+		}
+		return fmt.Errorf("inspect network: %w: %s", err, strings.TrimSpace(string(out)))
+	} else if strings.TrimSpace(string(out)) != "true" {
+		return fmt.Errorf("network %s is not managed by Okestra", name)
+	}
+	out, err := d.command(ctx, "network", "rm", name).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("remove network: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (d *DockerClient) EnsureVolume(ctx context.Context, name string) error {
+	if out, err := d.command(ctx, "volume", "inspect", "-f", "{{ index .Labels \"dev.okestra.managed\" }}", name).CombinedOutput(); err == nil {
+		if strings.TrimSpace(string(out)) != "true" {
+			return fmt.Errorf("volume %s already exists but is not managed by Okestra", name)
+		}
+		return nil
+	}
+	out, err := d.command(ctx, "volume", "create", "--label", "dev.okestra.managed=true", name).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("create volume: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	label, err := d.command(ctx, "volume", "inspect", "-f", "{{ index .Labels \"dev.okestra.managed\" }}", name).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(label)) != "true" {
+		return fmt.Errorf("volume %s could not be verified as Okestra-managed", name)
+	}
+	return nil
+}
+
+func (d *DockerClient) InspectContainer(ctx context.Context, id string) (protocol.ContainerDetails, error) {
+	return d.inspectContainer(ctx, id, false)
+}
+
+func (d *DockerClient) InspectContainerWithLogs(ctx context.Context, id string) (protocol.ContainerDetails, error) {
+	return d.inspectContainer(ctx, id, true)
+}
+
+func (d *DockerClient) inspectContainer(ctx context.Context, id string, includeLogs bool) (protocol.ContainerDetails, error) {
+	out, err := d.command(ctx, "inspect", "--type", "container", id).CombinedOutput()
+	if err != nil {
+		return protocol.ContainerDetails{}, fmt.Errorf("inspect container: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	var rows []struct {
+		ID     string `json:"Id"`
+		Name   string `json:"Name"`
+		Config struct {
+			Image  string            `json:"Image"`
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+		State struct {
+			Status    string `json:"Status"`
+			Running   bool   `json:"Running"`
+			ExitCode  int    `json:"ExitCode"`
+			OOMKilled bool   `json:"OOMKilled"`
+			Error     string `json:"Error"`
+			Health    *struct {
+				Status string `json:"Status"`
+			} `json:"Health"`
+		} `json:"State"`
+		RestartCount    int `json:"RestartCount"`
+		NetworkSettings struct {
+			Networks map[string]json.RawMessage `json:"Networks"`
+			Ports    map[string]json.RawMessage `json:"Ports"`
+		} `json:"NetworkSettings"`
+		Mounts []struct {
+			Name        string `json:"Name"`
+			Destination string `json:"Destination"`
+			RW          bool   `json:"RW"`
+		} `json:"Mounts"`
+	}
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return protocol.ContainerDetails{}, err
+	}
+	if len(rows) != 1 {
+		return protocol.ContainerDetails{}, fmt.Errorf("container %s not found", id)
+	}
+	r := rows[0]
+	detail := protocol.ContainerDetails{ID: r.ID, Name: strings.TrimPrefix(r.Name, "/"), Image: r.Config.Image, Status: r.State.Status, Running: r.State.Running, ExitCode: r.State.ExitCode, OOMKilled: r.State.OOMKilled, Error: r.State.Error, RestartCount: r.RestartCount, Labels: r.Config.Labels}
+	if r.State.Health != nil {
+		detail.Health = r.State.Health.Status
+	}
+	for network := range r.NetworkSettings.Networks {
+		detail.Networks = append(detail.Networks, network)
+	}
+	sort.Strings(detail.Networks)
+	for port := range r.NetworkSettings.Ports {
+		detail.Ports = append(detail.Ports, port)
+	}
+	sort.Strings(detail.Ports)
+	for _, mount := range r.Mounts {
+		if mount.Name != "" {
+			detail.Mounts = append(detail.Mounts, protocol.Mount{Source: mount.Name, Target: mount.Destination, ReadOnly: !mount.RW})
+		}
+	}
+	if includeLogs {
+		logs, _ := d.command(ctx, "logs", "--tail", "30", id).CombinedOutput()
+		if len(logs) > 16384 {
+			logs = logs[len(logs)-16384:]
+		}
+		detail.RecentLogs = string(logs)
+	}
+	return detail, nil
 }
 
 func (d *DockerClient) ListContainers(ctx context.Context) ([]protocol.ContainerSummary, error) {
@@ -180,7 +359,14 @@ func (d *DockerClient) RemoveImage(ctx context.Context, id string) error {
 }
 
 func (d *DockerClient) ContainerLogs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
+	return d.ContainerLogsTail(ctx, id, follow, 0)
+}
+
+func (d *DockerClient) ContainerLogsTail(ctx context.Context, id string, follow bool, tail int) (io.ReadCloser, error) {
 	args := []string{"logs"}
+	if tail > 0 {
+		args = append(args, "--tail", strconv.Itoa(tail))
+	}
 	if follow {
 		args = append(args, "--follow")
 	}

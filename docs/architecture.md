@@ -34,16 +34,20 @@ Container and image operations are authenticated HTTP requests. Logs and exec se
 
 ### Port forwarding
 
-The CLI binds `127.0.0.1:LOCAL_PORT`. For each local connection it opens an authenticated WebSocket to the service. The service resolves the container's private Docker-network address and bridges bytes to `CONTAINER_IP:REMOTE_PORT`. No container port needs to be published on the server host.
+The CLI binds IPv4 and IPv6 localhost for each requested port. For each local connection it opens an authenticated WebSocket to the service. The service resolves the container's private Docker-network address and bridges bytes to `CONTAINER_IP:REMOTE_PORT`. No container port needs to be published on the server host. `okestra connect` runs this listener in a separate local process, controlled through a private Unix socket under `~/.okestra/forwards/`.
+
+### Projects
+
+`okestra.json` declares a small set of services. The CLI orders dependencies, creates an Okestra-labeled Docker bridge network and named volumes, builds local images, and creates labeled containers. Each service gets a network alias for private DNS. Volumes remain after `down`. The manifest stays on the developer computer; the server holds Docker state. `watch` polls local build contexts and rebuilds a changed service without replacing its dependencies.
 
 ## State ownership
 
 - Docker owns durable image and container state.
-- `~/.okestra/config.json` owns local server profiles and tokens.
+- `~/.okestra/config.json` owns local server profiles and tokens; `~/.okestra/forwards/` holds local forward-control sockets and logs.
 - `/etc/okestra/okestra.env` owns server configuration and its token.
 - `/var/lib/okestra` contains temporary build uploads.
 - Operations, exec reservations, and tunnel reservations are bounded in-memory state and reset when the service restarts.
 
 ## Current product boundary
 
-The first usable release optimizes for one trusted developer and one server. Compose, local-directory synchronization, multi-user authorization, persistent operation history, and a graphical control plane are follow-on capabilities. The protocol already separates the CLI from the service so a desktop application can later use the same service API without changing the networking model.
+The current release optimizes for one trusted developer and one server. It has a focused project manifest, rebuild-based watch mode, and an optional Mac menu-bar controller. It is not full Compose, does not perform live file synchronization into running containers, and does not have multi-user authorization or persistent operation history.

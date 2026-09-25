@@ -15,6 +15,29 @@ import (
 
 type fakeDocker struct{}
 
+type fakeProjectDocker struct {
+	fakeDocker
+	network string
+	volume  string
+}
+
+func (f *fakeProjectDocker) EnsureNetwork(_ context.Context, name string) error {
+	f.network = name
+	return nil
+}
+func (f *fakeProjectDocker) RemoveNetwork(_ context.Context, name string) error {
+	f.network = "removed:" + name
+	return nil
+}
+func (f *fakeProjectDocker) EnsureVolume(_ context.Context, name string) error {
+	f.volume = name
+	return nil
+}
+func (f *fakeProjectDocker) StartContainer(context.Context, string) error { return nil }
+func (f *fakeProjectDocker) InspectContainer(_ context.Context, id string) (protocol.ContainerDetails, error) {
+	return protocol.ContainerDetails{Name: id, Running: true, Health: "healthy"}, nil
+}
+
 func (fakeDocker) Ping(ctx context.Context) error { return nil }
 func (fakeDocker) BuildImage(ctx context.Context, buildContext io.Reader, req protocol.BuildRequest) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader("{\"stream\":\"ok\"}\n")), nil
@@ -84,6 +107,35 @@ func TestStatusHandler(t *testing.T) {
 	}
 	if !status.ServiceHealthy || !status.DockerHealthy {
 		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
+func TestProjectResourcesRequireAuthAndSafeNames(t *testing.T) {
+	docker := &fakeProjectDocker{}
+	srv := NewServer("127.0.0.1:0", "test-token", t.TempDir(), docker)
+	request := func(method, path, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	if got := request(http.MethodPut, "/v1/projects/networks/okestra-demo", ""); got.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d", got.Code)
+	}
+	if got := request(http.MethodPut, "/v1/projects/networks/bridge", "test-token"); got.Code != http.StatusBadRequest {
+		t.Fatalf("unsafe name status = %d", got.Code)
+	}
+	if got := request(http.MethodPut, "/v1/projects/networks/okestra-demo", "test-token"); got.Code != http.StatusNoContent || docker.network != "okestra-demo" {
+		t.Fatalf("network status = %d, name = %s", got.Code, docker.network)
+	}
+	if got := request(http.MethodPut, "/v1/projects/volumes/okestra-demo-data", "test-token"); got.Code != http.StatusNoContent || docker.volume != "okestra-demo-data" {
+		t.Fatalf("volume status = %d, name = %s", got.Code, docker.volume)
+	}
+	if got := request(http.MethodGet, "/v1/containers/okestra-demo-app/inspect", "test-token"); got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"health":"healthy"`) {
+		t.Fatalf("inspect status = %d, body = %s", got.Code, got.Body.String())
 	}
 }
 

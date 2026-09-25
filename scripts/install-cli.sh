@@ -49,6 +49,13 @@ install_cli() {
   fi
   printf '\nInstalled %s\n' "$DESTINATION"
   "$DESTINATION" version
+  if [ "$(uname -s)" = Darwin ] && [ -d "$SCRIPT_DIR/Okestra Menu.app" ]; then
+    command -v ditto >/dev/null 2>&1 || { printf '%s\n' 'ditto is required to install the Mac menu app' >&2; exit 1; }
+    app_destination="$HOME/Applications/Okestra Menu.app"
+    mkdir -p "$HOME/Applications"
+    ditto "$SCRIPT_DIR/Okestra Menu.app" "$app_destination"
+    printf 'Installed %s (open it from Applications when ready)\n' "$app_destination"
+  fi
 }
 
 ask_value() {

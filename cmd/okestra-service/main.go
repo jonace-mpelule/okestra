@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"github.com/jonace-mpelule/okestra/internal/updater"
 	"log"
 	"os"
 	"os/signal"
@@ -11,6 +13,16 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "upgrade" || os.Args[1] == "update") {
+		if len(os.Args) > 3 || (len(os.Args) == 3 && os.Args[2] != "--check") {
+			fmt.Fprintln(os.Stderr, "usage: sudo okestra-service upgrade [--check]")
+			os.Exit(1)
+		}
+		if err := updater.Upgrade(context.Background(), "okestra-service", len(os.Args) == 3, os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	addr := getenv("OKESTRA_SERVICE_ADDR", getenv("OKESTRA_AGENT_ADDR", "127.0.0.1:8088"))
 	token := getenv("OKESTRA_SERVICE_TOKEN", os.Getenv("OKESTRA_AGENT_TOKEN"))
 	if token == "" {

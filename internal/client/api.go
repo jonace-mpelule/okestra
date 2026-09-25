@@ -119,8 +119,58 @@ func (a *API) RunContainer(ctx context.Context, req protocol.RunRequest) (*proto
 	return &out, nil
 }
 
+func (a *API) InspectContainer(ctx context.Context, id string) (*protocol.ContainerDetails, error) {
+	return a.inspectContainer(ctx, id, false)
+}
+
+func (a *API) InspectContainerWithLogs(ctx context.Context, id string) (*protocol.ContainerDetails, error) {
+	return a.inspectContainer(ctx, id, true)
+}
+
+func (a *API) inspectContainer(ctx context.Context, id string, logs bool) (*protocol.ContainerDetails, error) {
+	var out protocol.ContainerDetails
+	path := "/v1/containers/" + url.PathEscape(id) + "/inspect"
+	if logs {
+		path += "?logs=1"
+	}
+	if err := a.getJSON(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (a *API) EnsureNetwork(ctx context.Context, name string) error {
+	return a.resourceRequest(ctx, http.MethodPut, "/v1/projects/networks/"+url.PathEscape(name))
+}
+func (a *API) RemoveNetwork(ctx context.Context, name string) error {
+	return a.resourceRequest(ctx, http.MethodDelete, "/v1/projects/networks/"+url.PathEscape(name))
+}
+func (a *API) EnsureVolume(ctx context.Context, name string) error {
+	return a.resourceRequest(ctx, http.MethodPut, "/v1/projects/volumes/"+url.PathEscape(name))
+}
+
+func (a *API) resourceRequest(ctx context.Context, method, path string) error {
+	req, err := http.NewRequestWithContext(ctx, method, a.baseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := a.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return decodeAPIError(resp)
+	}
+	return nil
+}
+
 func (a *API) StreamLogs(ctx context.Context, containerID string, follow bool, fn func(protocol.StreamEnvelope) error) error {
-	path := fmt.Sprintf("/v1/containers/%s/logs/ws?follow=%d", url.PathEscape(containerID), boolToInt(follow))
+	return a.StreamLogsTail(ctx, containerID, follow, 0, fn)
+}
+
+func (a *API) StreamLogsTail(ctx context.Context, containerID string, follow bool, tail int, fn func(protocol.StreamEnvelope) error) error {
+	path := fmt.Sprintf("/v1/containers/%s/logs/ws?follow=%d&tail=%d", url.PathEscape(containerID), boolToInt(follow), tail)
 	return a.readJSONStream(ctx, wsURL(a.baseURL, path), fn)
 }
 
@@ -192,6 +242,11 @@ func (a *API) StopContainer(ctx context.Context, id string) error {
 	return err
 }
 
+func (a *API) StartContainer(ctx context.Context, id string) error {
+	_, err := a.emptyPost(ctx, "/v1/containers/"+url.PathEscape(id)+"/start")
+	return err
+}
+
 func (a *API) RemoveContainer(ctx context.Context, id string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.baseURL+"/v1/containers/"+url.PathEscape(id), nil)
 	if err != nil {
@@ -247,7 +302,10 @@ func (a *API) DialPortForward(ctx context.Context, id string) (*websocket.Conn, 
 	if a.token != "" {
 		header.Set("Authorization", "Bearer "+a.token)
 	}
-	conn, _, err := a.webSocketDialer().DialContext(ctx, wsURL(a.baseURL, "/v1/port-forwards/"+id+"/ws"), header)
+	conn, resp, err := a.webSocketDialer().DialContext(ctx, wsURL(a.baseURL, "/v1/port-forwards/"+id+"/ws"), header)
+	if err != nil && resp != nil && resp.StatusCode == http.StatusNotFound {
+		return nil, errPortForwardExpired
+	}
 	return conn, err
 }
 
@@ -438,9 +496,13 @@ func StartPortForward(ctx context.Context, api *API, req protocol.PortForwardReq
 type PortForward struct {
 	api       *API
 	id        string
+	req       protocol.PortForwardRequest
+	mu        sync.Mutex
 	listeners []net.Listener
 	once      sync.Once
 }
+
+var errPortForwardExpired = errors.New("port forward reservation expired")
 
 func OpenPortForward(ctx context.Context, api *API, req protocol.PortForwardRequest, listeners ...net.Listener) (*PortForward, error) {
 	if err := req.Validate(); err != nil {
@@ -453,15 +515,18 @@ func OpenPortForward(ctx context.Context, api *API, req protocol.PortForwardRequ
 	if err != nil {
 		return nil, err
 	}
-	return &PortForward{api: api, id: id, listeners: listeners}, nil
+	return &PortForward{api: api, id: id, req: req, listeners: listeners}, nil
 }
 
 func (f *PortForward) Close() {
 	f.once.Do(func() {
 		closeListeners(f.listeners)
+		f.mu.Lock()
+		id := f.id
+		f.mu.Unlock()
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = f.api.DeletePortForward(cleanupCtx, f.id)
+		_ = f.api.DeletePortForward(cleanupCtx, id)
 	})
 }
 
@@ -488,7 +553,7 @@ func (f *PortForward) Serve(ctx context.Context) error {
 					}
 					return
 				}
-				go handleForwardConn(ctx, f.api, f.id, conn)
+				go handleForwardConn(ctx, f, conn)
 			}
 		}(listener)
 	}
@@ -521,9 +586,26 @@ func closeListeners(listeners []net.Listener) {
 	}
 }
 
-func handleForwardConn(ctx context.Context, api *API, id string, conn net.Conn) {
+func (f *PortForward) dial(ctx context.Context) (*websocket.Conn, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ws, err := f.api.DialPortForward(ctx, f.id)
+	if !errors.Is(err, errPortForwardExpired) {
+		return ws, err
+	}
+	// The service may have restarted and lost its in-memory reservation.
+	// Re-register without requiring the developer to reconnect manually.
+	id, err := f.api.CreatePortForward(ctx, f.req)
+	if err != nil {
+		return nil, err
+	}
+	f.id = id
+	return f.api.DialPortForward(ctx, id)
+}
+
+func handleForwardConn(ctx context.Context, f *PortForward, conn net.Conn) {
 	defer conn.Close()
-	ws, err := api.DialPortForward(ctx, id)
+	ws, err := f.dial(ctx)
 	if err != nil {
 		return
 	}

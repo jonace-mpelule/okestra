@@ -11,7 +11,7 @@ developer computer                              Linux Docker server
 
 okestra CLI ─── authenticated HTTP/WebSocket ──► okestra-service ──► Docker Engine
      ▲                                                  │
-     └────── 127.0.0.1 port forwards ◄─────────────────┘
+     └──────── localhost port forwards ◄───────────────┘
 ```
 
 The service needs no database and no cloud control plane. Runtime state is deliberately ephemeral; Docker remains the source of truth for images and containers.
@@ -23,7 +23,10 @@ The service needs no database and no cloud control plane. Runtime state is delib
 - List remote images.
 - Stream container logs.
 - Run interactive and non-interactive commands in containers.
-- Forward a container port back to `127.0.0.1` on the developer computer.
+- Forward a container port back to IPv4 and IPv6 localhost on the developer computer.
+- Bring up a multi-service project with a private Docker network, service-name DNS, health checks, and persistent named volumes.
+- Keep project port forwards in a background local process and rebuild changed source with `watch`.
+- Inspect failed containers with `why`, upgrade installed binaries, and use an optional native macOS menu-bar controller.
 - Save and switch between named server profiles.
 - Verify the complete connection with `okestra doctor`.
 
@@ -105,6 +108,7 @@ make VERSION=0.1.0 build
 ```
 
 The computer menu also offers **Install or update CLI only** and **Connect the already installed CLI**. Rerun `./install-cli.sh` to open it again.
+Mac release archives also install the optional unsigned Okestra Menu app in `~/Applications`. Open it from Applications and choose your project folder. It is a local convenience controller; the CLI remains the full control plane.
 
 For unattended installation without pairing:
 
@@ -156,6 +160,7 @@ okestra ps
 okestra images
 okestra rmi IMAGE
 okestra logs -f CONTAINER
+okestra logs --tail 100 CONTAINER
 okestra exec CONTAINER uname -a
 okestra exec -it CONTAINER sh
 okestra port-forward CONTAINER 3000:3000
@@ -164,11 +169,50 @@ okestra run --name app -p 3000:3000 --env-file .env --workdir /app app:dev
 okestra server list
 okestra server use devbox
 okestra config path
+okestra why CONTAINER
+okestra upgrade --check
+okestra upgrade
 ```
 
 Press Control-C to leave a followed log stream (`okestra logs -f`) or an interactive exec session. Without `-f`, `okestra logs` prints the existing output and exits on its own.
 
 `--env-file` reads a local `KEY=VALUE` file and sends the values in the authenticated run request; the file itself is not copied to the server. Blank lines, comment lines, `export KEY=VALUE`, and simple quoted values are accepted. A repeated `--env KEY=VALUE` overrides the same key from the file. Keep secrets out of shell history and do not commit your real `.env`. If the container exits during startup or while a port forward is active, `okestra run` reports its status and points to `okestra logs`. A requested local port is reserved on both `127.0.0.1` and, when IPv6 is available, `::1` before the remote container is created; if either loopback address is already using it, `run` fails with an address-in-use error.
+
+## Project workflow
+
+Create `okestra.json` with `okestra project init`, or start from [the single-service example](examples/hello/okestra.json) or [the multi-service example](examples/multi/okestra.json). Its `services` map accepts `image` or `build` (`context`, optional `dockerfile` and `args`), `command`, `working_dir`, `env_file`, `environment`, `ports` (`LOCAL:CONTAINER`), `volumes` (`NAME:/container/path[:ro]`), `depends_on`, `restart`, and `health` (`command`, `interval_seconds`, `retries`). Paths are relative to the manifest directory. Docker service names are available to sibling containers as DNS names, such as `db` and `cache`.
+
+From a project folder:
+
+```bash
+okestra up
+okestra connect
+curl http://127.0.0.1:8080
+okestra project ps
+okestra why okestra-okestra-hello-app
+okestra disconnect
+okestra down
+```
+
+`up` checks local port availability before creating remote containers. It starts existing stopped project containers; use `--build --recreate` after changing the image or environment. `connect` owns the localhost ports in a background process, so you can close the terminal; run it again to refresh changed port mappings. `connections` lists active forwards and `disconnect` closes them. `down` disconnects, removes the project's containers and private network, and **keeps named volumes**. It refuses to remove containers or networks it does not recognize as Okestra-owned.
+
+For local source iteration, run `okestra watch` (optionally `--service app`) in a terminal. It polls the build context, applies `.dockerignore`, and rebuilds/recreates only the changed service. The first run brings the project up. It does not provide bind-mount file synchronization or hot module replacement; the container restarts after a successful rebuild. Use `connect` separately to keep localhost ports available between rebuilds. Press Control-C to stop watching.
+
+To try the multi-service example, copy its `.env.example` to `.env`, choose a new database password, then run `okestra up` and `okestra connect` from `examples/multi`. Its public web endpoint is a smoke test; the database and cache remain private to the project network. Real apps can reach them at hostnames `db` and `cache`.
+
+## Upgrades
+
+After installing this version, upgrades are one command on each machine:
+
+```bash
+# Linux Docker server
+sudo okestra-service upgrade
+
+# Developer computer
+okestra upgrade
+```
+
+Both commands resolve the latest public release for the current OS/CPU, verify its published SHA-256, and replace only their own binary. The server command preserves `/etc/okestra/okestra.env`, restarts the enabled systemd unit, checks that it is active, and restores the prior binary if restart fails. The Mac CLI also refreshes the bundled menu app in `~/Applications` when the archive includes it. Use `--check` to inspect the available version without installing. `update` is an alias for `upgrade`. To move from a release that predates these commands, rerun the two guided `curl` installers above once; they preserve your server token and local profiles. Upgrade the server first when the protocol version changes.
 
 ## Transport and authentication
 
@@ -187,7 +231,7 @@ sudo systemctl stop okestra-service
 curl http://127.0.0.1:8088/healthz
 ```
 
-The service writes temporary uploaded build contexts under `/var/lib/okestra` and removes them after each build. It invokes the installed Docker CLI and respects `DOCKER_HOST` when configured.
+The service is enabled in systemd and starts after Docker on server reboot. It writes temporary uploaded build contexts under `/var/lib/okestra` and removes them after each build. It invokes the installed Docker CLI and respects `DOCKER_HOST` when configured.
 
 ## Build and verification
 
@@ -199,6 +243,7 @@ make VERSION=0.1.0 dist
 ```
 
 `make dist` produces raw binaries and self-contained installation archives for macOS and Linux on AMD64 and ARM64, with SHA-256 checksums under `dist/`.
+On macOS it also builds a universal Intel/Apple Silicon menu app and embeds it in the Mac CLI archives. `make menubar` builds just the local app. The app is unsigned, so macOS may ask you to approve its first launch; it is not yet notarized.
 
 ## Publish a GitHub Release
 
@@ -223,6 +268,6 @@ Choose the repository owner and visibility yourself; the release command does no
 
 ## Current boundary
 
-This release targets one trusted developer and one trusted Docker server. It intentionally does not yet include multi-user authorization, Docker Compose, container orchestration, a graphical application, public-internet exposure, or durable operation history.
+This release targets one trusted developer and one trusted Docker server. The project format is deliberately small and is not a full Docker Compose implementation. It does not yet include multi-user authorization, public-internet exposure, or durable operation history.
 
 See [docs/architecture.md](docs/architecture.md) for the design and trust model, and [docs/troubleshooting.md](docs/troubleshooting.md) for connection and runtime diagnostics.

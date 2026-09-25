@@ -60,7 +60,15 @@ okestra ps
 okestra exec CONTAINER sh -c 'netstat -lnt 2>/dev/null || ss -lnt'
 ```
 
-Also verify that the requested local port is unused. Port forwards bind only to `127.0.0.1` on the developer computer.
+Also verify that the requested local port is unused. Port forwards bind IPv4 and IPv6 localhost on the developer computer. Run `okestra connections` to see Okestra-owned local forwards; `okestra disconnect` closes the current project's background forward. If the port belongs to another local app, `okestra up` fails before remote mutation.
+
+## A project service exits immediately
+
+Run `okestra why CONTAINER` to see its exit code, Docker health state, restart count, and recent logs. Verify `env_file` paths and required variables in `okestra.json`. `okestra up --build --recreate` applies changed environment or image configuration; a plain `up` leaves a running container unchanged.
+
+## Upgrade says the service protocol is incompatible
+
+Upgrade the Linux server first with `sudo okestra-service upgrade`. If it still runs an older release without that command, rerun the guided server `curl` installer in the README. It preserves the configured token and listener. Then run `okestra upgrade` on the computer and `okestra doctor`.
 
 ## Build context is unexpectedly large
 

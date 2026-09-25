@@ -3,8 +3,11 @@ package protocol
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+var dockerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
 func (r BuildRequest) Validate() error {
 	if strings.TrimSpace(r.Tag) == "" {
@@ -20,6 +23,29 @@ func (r RunRequest) Validate() error {
 	for _, pf := range r.AutoForward {
 		if err := validatePortMapping(pf); err != nil {
 			return err
+		}
+	}
+	for _, name := range []string{r.Name, r.Network, r.NetworkAlias} {
+		if name != "" && !dockerName.MatchString(name) {
+			return fmt.Errorf("invalid Docker name %q", name)
+		}
+	}
+	if r.Restart != "" && r.Restart != "no" && r.Restart != "always" && r.Restart != "unless-stopped" && r.Restart != "on-failure" {
+		return fmt.Errorf("invalid restart policy %q", r.Restart)
+	}
+	for _, mount := range r.Mounts {
+		if !dockerName.MatchString(mount.Source) || !strings.HasPrefix(mount.Target, "/") || strings.ContainsAny(mount.Target, ",\r\n") {
+			return fmt.Errorf("invalid volume mount %q:%q", mount.Source, mount.Target)
+		}
+	}
+	for key := range r.Labels {
+		if strings.TrimSpace(key) == "" || strings.ContainsAny(key, "\r\n") {
+			return fmt.Errorf("invalid label key %q", key)
+		}
+	}
+	if r.Health != nil {
+		if strings.TrimSpace(r.Health.Command) == "" || r.Health.IntervalSeconds < 0 || r.Health.Retries < 0 {
+			return errors.New("invalid health check")
 		}
 	}
 	return nil
