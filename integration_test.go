@@ -112,6 +112,16 @@ func TestAuthenticatedClientServiceWorkflow(t *testing.T) {
 	if !strings.Contains(output.String(), "remote build complete") {
 		t.Fatalf("missing build output: %q", output.String())
 	}
+	var logs bytes.Buffer
+	if err := api.StreamLogs(ctx, "container-123", true, func(env protocol.StreamEnvelope) error {
+		_, _ = logs.Write(env.Data)
+		return nil
+	}); err != nil {
+		t.Fatalf("stream logs: %v", err)
+	}
+	if !strings.Contains(logs.String(), "hello from remote container") {
+		t.Fatalf("missing container logs: %q", logs.String())
+	}
 
 	execID, err := api.CreateExec(ctx, "container-123", protocol.ExecRequest{Command: []string{"true"}, Stdout: true})
 	if err != nil {

@@ -680,7 +680,7 @@ func wsURL(base, path string) string {
 	default:
 		u.Scheme = "ws"
 	}
-	u.Path = path
+	u.Path, u.RawQuery, _ = strings.Cut(path, "?")
 	return u.String()
 }
 
