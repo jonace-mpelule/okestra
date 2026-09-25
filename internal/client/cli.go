@@ -374,19 +374,19 @@ func runRun(ctx context.Context, cfg *Config, args []string, stdout, stderr io.W
 	for key, value := range overrides {
 		env[key] = value
 	}
-	listeners := make([]net.Listener, 0, len(pms))
+	listeners := make([][]net.Listener, 0, len(pms))
 	defer func() {
-		for _, listener := range listeners {
-			_ = listener.Close()
+		for _, group := range listeners {
+			closeListeners(group)
 		}
 	}()
 	for _, pm := range pms {
-		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", pm.LocalPort))
+		group, err := listenLoopbackPort(pm.LocalPort)
 		if err != nil {
 			fmt.Fprintf(stderr, "local port %d: %v\n", pm.LocalPort, err)
 			return 1
 		}
-		listeners = append(listeners, listener)
+		listeners = append(listeners, group)
 	}
 	result, err := api.RunContainer(ctx, protocol.RunRequest{
 		Image:       image,
@@ -427,13 +427,16 @@ func runRun(ctx context.Context, cfg *Config, args []string, stdout, stderr io.W
 			ContainerID: result.ContainerID,
 			LocalPort:   pm.LocalPort,
 			RemotePort:  pm.RemotePort,
-		}, listeners[i])
+		}, listeners[i]...)
 		if err != nil {
 			fmt.Fprintf(stderr, "port forwarding setup: %v\n", err)
 			return 1
 		}
 		activeForwards = append(activeForwards, forward)
-		fmt.Fprintf(stdout, "forwarding 127.0.0.1:%d -> %s:%d\n", pm.LocalPort, result.ContainerID, pm.RemotePort)
+		fmt.Fprintf(stdout, "forwarding localhost:%d -> %s:%d\n", pm.LocalPort, result.ContainerID, pm.RemotePort)
+	}
+	if len(pms) == 0 {
+		fmt.Fprintln(stdout, "no local port forward requested; use -p LOCAL:CONTAINER to open localhost")
 	}
 	if len(pms) > 0 {
 		forwardErrors := make(chan error, len(activeForwards))

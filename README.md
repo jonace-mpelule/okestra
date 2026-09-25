@@ -166,7 +166,7 @@ okestra server use devbox
 okestra config path
 ```
 
-`--env-file` reads a local `KEY=VALUE` file and sends the values in the authenticated run request; the file itself is not copied to the server. Blank lines, comment lines, `export KEY=VALUE`, and simple quoted values are accepted. A repeated `--env KEY=VALUE` overrides the same key from the file. Keep secrets out of shell history and do not commit your real `.env`. If the container exits during startup or while a port forward is active, `okestra run` reports its status and points to `okestra logs`.
+`--env-file` reads a local `KEY=VALUE` file and sends the values in the authenticated run request; the file itself is not copied to the server. Blank lines, comment lines, `export KEY=VALUE`, and simple quoted values are accepted. A repeated `--env KEY=VALUE` overrides the same key from the file. Keep secrets out of shell history and do not commit your real `.env`. If the container exits during startup or while a port forward is active, `okestra run` reports its status and points to `okestra logs`. A requested local port is reserved on both `127.0.0.1` and, when IPv6 is available, `::1` before the remote container is created; if either loopback address is already using it, `run` fails with an address-in-use error.
 
 ## Transport and authentication
 

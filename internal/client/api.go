@@ -14,8 +14,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -414,13 +416,13 @@ type ExecIO struct {
 }
 
 func StartPortForward(ctx context.Context, api *API, req protocol.PortForwardRequest) error {
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", req.LocalPort))
+	listeners, err := listenLoopbackPort(req.LocalPort)
 	if err != nil {
 		return err
 	}
-	forward, err := OpenPortForward(ctx, api, req, listener)
+	forward, err := OpenPortForward(ctx, api, req, listeners...)
 	if err != nil {
-		_ = listener.Close()
+		closeListeners(listeners)
 		return err
 	}
 	defer forward.Close()
@@ -428,26 +430,29 @@ func StartPortForward(ctx context.Context, api *API, req protocol.PortForwardReq
 }
 
 type PortForward struct {
-	api      *API
-	id       string
-	listener net.Listener
-	once     sync.Once
+	api       *API
+	id        string
+	listeners []net.Listener
+	once      sync.Once
 }
 
-func OpenPortForward(ctx context.Context, api *API, req protocol.PortForwardRequest, listener net.Listener) (*PortForward, error) {
+func OpenPortForward(ctx context.Context, api *API, req protocol.PortForwardRequest, listeners ...net.Listener) (*PortForward, error) {
 	if err := req.Validate(); err != nil {
 		return nil, err
+	}
+	if len(listeners) == 0 {
+		return nil, errors.New("at least one local listener is required")
 	}
 	id, err := api.CreatePortForward(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	return &PortForward{api: api, id: id, listener: listener}, nil
+	return &PortForward{api: api, id: id, listeners: listeners}, nil
 }
 
 func (f *PortForward) Close() {
 	f.once.Do(func() {
-		_ = f.listener.Close()
+		closeListeners(f.listeners)
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = f.api.DeletePortForward(cleanupCtx, f.id)
@@ -460,19 +465,53 @@ func (f *PortForward) Serve(ctx context.Context) error {
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = f.listener.Close()
+			closeListeners(f.listeners)
 		case <-done:
 		}
 	}()
-	for {
-		conn, err := f.listener.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
+	errors := make(chan error, len(f.listeners))
+	for _, listener := range f.listeners {
+		go func(listener net.Listener) {
+			for {
+				conn, err := listener.Accept()
+				if err != nil {
+					if ctx.Err() != nil {
+						errors <- nil
+					} else {
+						errors <- err
+					}
+					return
+				}
+				go handleForwardConn(ctx, f.api, f.id, conn)
 			}
-			return err
+		}(listener)
+	}
+	err := <-errors
+	closeListeners(f.listeners)
+	return err
+}
+
+func listenLoopbackPort(port int) ([]net.Listener, error) {
+	address4 := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	listener4, err := net.Listen("tcp4", address4)
+	if err != nil {
+		return nil, fmt.Errorf("IPv4 localhost %s: %w", address4, err)
+	}
+	address6 := net.JoinHostPort("::1", strconv.Itoa(port))
+	listener6, err := net.Listen("tcp6", address6)
+	if err != nil {
+		if errors.Is(err, syscall.EAFNOSUPPORT) || errors.Is(err, syscall.EPROTONOSUPPORT) || errors.Is(err, syscall.EADDRNOTAVAIL) {
+			return []net.Listener{listener4}, nil
 		}
-		go handleForwardConn(ctx, f.api, f.id, conn)
+		_ = listener4.Close()
+		return nil, fmt.Errorf("IPv6 localhost %s: %w", address6, err)
+	}
+	return []net.Listener{listener4, listener6}, nil
+}
+
+func closeListeners(listeners []net.Listener) {
+	for _, listener := range listeners {
+		_ = listener.Close()
 	}
 }
 

@@ -81,6 +81,33 @@ func TestRunChecksAllLocalPortsBeforeCreatingContainer(t *testing.T) {
 	}
 }
 
+func TestRunRejectsIPv6LocalPortConflict(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback is unavailable: %v", err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	var runRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/containers/run" {
+			runRequests++
+		}
+	}))
+	defer server.Close()
+	cfg := &Config{ActiveAgent: "dev", Agents: map[string]protocol.AgentProfile{"dev": {URL: server.URL}}}
+	var out, errOut bytes.Buffer
+	if code := runRun(context.Background(), cfg, []string{"-p", fmt.Sprintf("%d:2102", port), "demo:latest"}, &out, &errOut); code != 1 {
+		t.Fatalf("expected IPv6 port conflict, got %d: %s", code, errOut.String())
+	}
+	if runRequests != 0 {
+		t.Fatalf("container created despite IPv6 port conflict: %d requests", runRequests)
+	}
+	if !strings.Contains(errOut.String(), "IPv6 localhost") {
+		t.Fatalf("missing IPv6 conflict detail: %s", errOut.String())
+	}
+}
+
 func TestRunStartsAndCleansUpTwoForwards(t *testing.T) {
 	first, second := freeTCPPort(t), freeTCPPort(t)
 	for second == first {
@@ -140,6 +167,11 @@ func TestRunStartsAndCleansUpTwoForwards(t *testing.T) {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+	if ipv6, err := net.DialTimeout("tcp6", fmt.Sprintf("[::1]:%d", first), 100*time.Millisecond); err == nil {
+		_ = ipv6.Close()
+	} else {
+		t.Fatalf("IPv6 localhost forward was not listening: %v", err)
 	}
 	cancel()
 	select {
