@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -92,6 +94,8 @@ func TestRunStartsAndCleansUpTwoForwards(t *testing.T) {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/containers/run":
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(protocol.RunResult{ContainerID: "container-123"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/containers":
+			_ = json.NewEncoder(w).Encode([]protocol.ContainerSummary{{ID: "container-123", Status: "Up 1 second"}})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/port-forwards":
 			created <- struct{}{}
 			w.WriteHeader(http.StatusCreated)
@@ -152,6 +156,109 @@ func TestRunStartsAndCleansUpTwoForwards(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("forward reservation was not cleaned up")
 		}
+	}
+}
+
+func TestRunReportsContainerExit(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envPath, []byte("MORGAN=dev\nDATABASE_URL=postgresql://db:5432/urbanman\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runRequests := make(chan protocol.RunRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/containers/run":
+			var request protocol.RunRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode run request: %v", err)
+			}
+			runRequests <- request
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(protocol.RunResult{ContainerID: "container-123"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/containers":
+			_ = json.NewEncoder(w).Encode([]protocol.ContainerSummary{{ID: "container-123", Name: "urbanman", Status: "Exited (1)"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	cfg := &Config{ActiveAgent: "dev", Agents: map[string]protocol.AgentProfile{"dev": {URL: server.URL}}}
+	var out, errOut bytes.Buffer
+	if code := runRun(context.Background(), cfg, []string{"--name", "urbanman", "--env-file", envPath, "--env", "MORGAN=combined", "demo:latest"}, &out, &errOut); code != 1 {
+		t.Fatalf("expected failed run, got %d: %s", code, errOut.String())
+	}
+	request := <-runRequests
+	if request.Env["MORGAN"] != "combined" || request.Env["DATABASE_URL"] != "postgresql://db:5432/urbanman" {
+		t.Fatalf("environment not sent correctly: %#v", request.Env)
+	}
+	if !strings.Contains(errOut.String(), "urbanman is not running (Exited (1))") || !strings.Contains(errOut.String(), "okestra logs urbanman") {
+		t.Fatalf("missing actionable exit message: %s", errOut.String())
+	}
+}
+
+func TestRunAcceptsSuccessfulShortLivedContainer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/containers/run":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(protocol.RunResult{ContainerID: "container-123"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/containers":
+			_ = json.NewEncoder(w).Encode([]protocol.ContainerSummary{{ID: "container-123", Name: "job", Status: "Exited (0)"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	cfg := &Config{ActiveAgent: "dev", Agents: map[string]protocol.AgentProfile{"dev": {URL: server.URL}}}
+	var out, errOut bytes.Buffer
+	if code := runRun(context.Background(), cfg, []string{"--name", "job", "demo:latest"}, &out, &errOut); code != 0 {
+		t.Fatalf("expected successful run, got %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "job finished (Exited (0))") {
+		t.Fatalf("missing completion message: %s", errOut.String())
+	}
+}
+
+func TestRunReportsContainerExitWhileForwarding(t *testing.T) {
+	port := freeTCPPort(t)
+	var statusChecks atomic.Int32
+	deleted := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/containers/run":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(protocol.RunResult{ContainerID: "container-123"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/containers":
+			status := "Up 1 second"
+			if statusChecks.Add(1) > 1 {
+				status = "Exited (1)"
+			}
+			_ = json.NewEncoder(w).Encode([]protocol.ContainerSummary{{ID: "container-123", Name: "urbanman", Status: status}})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/port-forwards":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "forward-1"})
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/port-forwards/forward-1":
+			deleted <- struct{}{}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	cfg := &Config{ActiveAgent: "dev", Agents: map[string]protocol.AgentProfile{"dev": {URL: server.URL}}}
+	var out, errOut bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if code := runRun(ctx, cfg, []string{"--name", "urbanman", "-p", fmt.Sprintf("%d:2102", port), "demo:latest"}, &out, &errOut); code != 1 {
+		t.Fatalf("expected failed run, got %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "urbanman is not running (Exited (1))") {
+		t.Fatalf("missing stopped-container message: %s", errOut.String())
+	}
+	select {
+	case <-deleted:
+	case <-time.After(time.Second):
+		t.Fatal("port forward was not cleaned up")
 	}
 }
 

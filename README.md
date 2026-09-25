@@ -160,11 +160,13 @@ okestra exec CONTAINER uname -a
 okestra exec -it CONTAINER sh
 okestra port-forward CONTAINER 3000:3000
 okestra build -t app:dev --build-arg NODE_ENV=development .
-okestra run --name app --env APP_ENV=development --workdir /app app:dev
+okestra run --name app -p 3000:3000 --env-file .env --workdir /app app:dev
 okestra server list
 okestra server use devbox
 okestra config path
 ```
+
+`--env-file` reads a local `KEY=VALUE` file and sends the values in the authenticated run request; the file itself is not copied to the server. Blank lines, comment lines, `export KEY=VALUE`, and simple quoted values are accepted. A repeated `--env KEY=VALUE` overrides the same key from the file. Keep secrets out of shell history and do not commit your real `.env`. If the container exits during startup or while a port forward is active, `okestra run` reports its status and points to `okestra logs`.
 
 ## Transport and authentication
 

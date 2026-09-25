@@ -340,17 +340,18 @@ func runRun(ctx context.Context, cfg *Config, args []string, stdout, stderr io.W
 	}
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	var name, workingDir string
+	var name, workingDir, envFile string
 	var forwards, environment multiFlag
 	fs.StringVar(&name, "name", "", "container name")
 	fs.StringVar(&workingDir, "workdir", "", "container working directory")
+	fs.StringVar(&envFile, "env-file", "", "local KEY=VALUE file for container environment")
 	fs.Var(&forwards, "p", "port forward local:remote")
 	fs.Var(&environment, "env", "environment variable KEY=VALUE (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintln(stderr, "usage: okestra run [--name name] [-p local:remote] <image> [cmd...]")
+		fmt.Fprintln(stderr, "usage: okestra run [--name name] [-p local:remote] [--env-file path] <image> [cmd...]")
 		return 1
 	}
 	image := fs.Arg(0)
@@ -360,10 +361,18 @@ func runRun(ctx context.Context, cfg *Config, args []string, stdout, stderr io.W
 		fmt.Fprintf(stderr, "parse ports: %v\n", err)
 		return 1
 	}
-	env, err := parseKeyValues(environment)
+	env, err := readEnvFile(envFile)
+	if err != nil {
+		fmt.Fprintf(stderr, "environment file: %v\n", err)
+		return 1
+	}
+	overrides, err := parseKeyValues(environment)
 	if err != nil {
 		fmt.Fprintf(stderr, "environment: %v\n", err)
 		return 1
+	}
+	for key, value := range overrides {
+		env[key] = value
 	}
 	listeners := make([]net.Listener, 0, len(pms))
 	defer func() {
@@ -392,6 +401,19 @@ func runRun(ctx context.Context, cfg *Config, args []string, stdout, stderr io.W
 		return 1
 	}
 	fmt.Fprintf(stdout, "container: %s\n", result.ContainerID)
+	// docker run -d can return successfully even when the process exits immediately.
+	// Check after a short startup window before advertising a usable local port.
+	select {
+	case <-ctx.Done():
+		return 0
+	case <-time.After(time.Second):
+	}
+	if stopped, exitCode, err := reportStoppedContainer(ctx, api, result.ContainerID, name, stderr); err != nil {
+		fmt.Fprintf(stderr, "could not confirm container status: %v\n", err)
+		return 1
+	} else if stopped {
+		return exitCode
+	}
 	forwardCtx, cancelForwards := context.WithCancel(ctx)
 	defer cancelForwards()
 	activeForwards := make([]*PortForward, 0, len(pms))
@@ -415,21 +437,64 @@ func runRun(ctx context.Context, cfg *Config, args []string, stdout, stderr io.W
 	}
 	if len(pms) > 0 {
 		forwardErrors := make(chan error, len(activeForwards))
+		statusTicker := time.NewTicker(2 * time.Second)
+		defer statusTicker.Stop()
 		for _, forward := range activeForwards {
 			go func(f *PortForward) { forwardErrors <- f.Serve(forwardCtx) }(forward)
 		}
-		select {
-		case <-ctx.Done():
-			return 0
-		case err := <-forwardErrors:
-			if ctx.Err() == nil {
-				cancelForwards()
-				fmt.Fprintf(stderr, "port forwarding stopped: %v\n", err)
-				return 1
+		for {
+			select {
+			case <-ctx.Done():
+				return 0
+			case err := <-forwardErrors:
+				if ctx.Err() == nil {
+					cancelForwards()
+					fmt.Fprintf(stderr, "port forwarding stopped: %v\n", err)
+					return 1
+				}
+			case <-statusTicker.C:
+				stopped, exitCode, err := reportStoppedContainer(ctx, api, result.ContainerID, name, stderr)
+				if err != nil {
+					if ctx.Err() != nil {
+						return 0
+					}
+					fmt.Fprintf(stderr, "could not check container status: %v\n", err)
+					return 1
+				}
+				if stopped {
+					return exitCode
+				}
 			}
 		}
 	}
 	return 0
+}
+
+func reportStoppedContainer(ctx context.Context, api *API, id, name string, stderr io.Writer) (bool, int, error) {
+	items, err := api.ListContainers(ctx)
+	if err != nil {
+		return false, 0, err
+	}
+	label := name
+	if label == "" {
+		label = shortID(id)
+	}
+	for _, item := range items {
+		if item.ID != id && (item.ID == "" || !strings.HasPrefix(id, item.ID)) && (name == "" || item.Name != name) {
+			continue
+		}
+		if strings.HasPrefix(item.Status, "Up") {
+			return false, 0, nil
+		}
+		if strings.HasPrefix(item.Status, "Exited (0)") {
+			fmt.Fprintf(stderr, "container %s finished (%s). View output: okestra logs %s\n", label, item.Status, label)
+			return true, 0, nil
+		}
+		fmt.Fprintf(stderr, "container %s is not running (%s). Check startup output: okestra logs %s\n", label, item.Status, label)
+		return true, 1, nil
+	}
+	fmt.Fprintf(stderr, "container %s is no longer listed. Check startup output: okestra logs %s\n", label, label)
+	return true, 1, nil
 }
 
 func runPS(ctx context.Context, cfg *Config, stdout, stderr io.Writer) int {
@@ -695,7 +760,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  status")
 	fmt.Fprintln(w, "  doctor")
 	fmt.Fprintln(w, "  build -t <tag> [--build-arg KEY=VALUE] [context]")
-	fmt.Fprintln(w, "  run [--name name] [-p local:remote] [--env KEY=VALUE] <image> [cmd...]")
+	fmt.Fprintln(w, "  run [--name name] [-p local:remote] [--env-file path] [--env KEY=VALUE] <image> [cmd...]")
 	fmt.Fprintln(w, "  ps")
 	fmt.Fprintln(w, "  logs [-f] <container>")
 	fmt.Fprintln(w, "  exec [-it] <container> <command...>")
