@@ -37,6 +37,26 @@ Requirements:
 
 Go 1.26 or newer is needed only if you build the packages from source. The release archives contain ready-to-run binaries.
 
+### Quick install
+
+On the **Linux Docker server**, run this in a terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jonace-mpelule/okestra/main/scripts/bootstrap.sh | sh -s -- server
+```
+
+Choose **1) Install or update the service** and enter the server's private-network IP with port `8088`. Keep the client URL and token shown at the end.
+
+On the **developer Mac or Linux computer**, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jonace-mpelule/okestra/main/scripts/bootstrap.sh | sh -s -- client
+```
+
+Choose **1) Install CLI and connect to a server**, then enter the URL and token from the server. The installer offers to run `okestra doctor` immediately. Both commands detect Intel/AMD64 versus ARM64, download the latest public release, check the archive's SHA-256 checksum, and open the same guided menus described below. The server command requests `sudo` only when it installs the service; the download itself runs as your regular user. Review the [bootstrap script](scripts/bootstrap.sh) before running it if you prefer not to pipe a network script into a shell.
+
+### Manual package installation
+
 ### 1. Choose the server package
 
 Run `uname -m` on the Linux server. Use `okestra-service_VERSION_linux_amd64.tar.gz` for `x86_64`, or `okestra-service_VERSION_linux_arm64.tar.gz` for `aarch64`, replacing `VERSION` with the published version (for example, `0.1.0`). Download the matching archive from GitHub Releases or copy it from `dist/` to the server, then extract and open its terminal menu:
