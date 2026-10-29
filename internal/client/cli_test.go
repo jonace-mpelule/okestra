@@ -28,6 +28,45 @@ func TestParsePortMappings(t *testing.T) {
 	}
 }
 
+func TestHumanFacingLabels(t *testing.T) {
+	for _, tc := range []struct{ code, label string }{
+		{"invalid_request", "Invalid request"},
+		{"docker_unavailable", "Docker unavailable"},
+		{"", "Server error"},
+	} {
+		if got := humanizeErrorCode(tc.code); got != tc.label {
+			t.Errorf("humanizeErrorCode(%q) = %q, want %q", tc.code, got, tc.label)
+		}
+	}
+	if got := healthLabel(true); got != "Healthy" {
+		t.Fatalf("healthy label = %q", got)
+	}
+	if got := healthLabel(false); got != "Unavailable" {
+		t.Fatalf("unavailable label = %q", got)
+	}
+}
+
+func TestStatusUsesReadableLabels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(protocol.ServiceStatus{
+			ServiceHealthy: true,
+			DockerHealthy:  false,
+			Version:        "1.2.3",
+		})
+	}))
+	defer server.Close()
+	cfg := &Config{ActiveAgent: "dev", Agents: map[string]protocol.AgentProfile{"dev": {URL: server.URL}}}
+	var out, errOut bytes.Buffer
+	if code := runStatus(context.Background(), cfg, &out, &errOut); code != 0 {
+		t.Fatalf("status failed: %s", errOut.String())
+	}
+	for _, line := range []string{"Server: ", "Service: Healthy", "Docker: Unavailable", "Service version: 1.2.3", "Active operations: 0"} {
+		if !strings.Contains(out.String(), line) {
+			t.Fatalf("missing %q in status output: %s", line, out.String())
+		}
+	}
+}
+
 func TestRunInitService(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

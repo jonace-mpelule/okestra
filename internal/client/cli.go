@@ -35,17 +35,19 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 	cfgPath := DefaultConfigPath()
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "load config: %v\n", err)
+		fmt.Fprintf(stderr, "Could not load configuration: %v\n", err)
 		return 1
 	}
 
 	switch args[0] {
+	case "android":
+		return runAndroid(ctx, cfg, args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintf(stdout, "okestra %s (commit %s, built %s)\n", version.Version, version.Commit, version.Date)
 		return 0
 	case "upgrade", "update":
 		if len(args) > 2 || (len(args) == 2 && args[1] != "--check") {
-			fmt.Fprintln(stderr, "usage: okestra upgrade [--check]")
+			fmt.Fprintln(stderr, "Usage: okestra upgrade [--check]")
 			return 1
 		}
 		if err := updater.Upgrade(ctx, "okestra", len(args) == 2, stdout); err != nil {
@@ -62,7 +64,7 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, cfgPath)
 			return 0
 		}
-		fmt.Fprintln(stderr, "usage: okestra config path")
+		fmt.Fprintln(stderr, "Usage: okestra config path")
 		return 1
 	case "status":
 		return runStatus(ctx, cfg, stdout, stderr)
@@ -70,7 +72,7 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 		return runDoctor(ctx, cfg, stdout, stderr)
 	case "project":
 		if len(args) < 2 {
-			fmt.Fprintln(stderr, "usage: okestra project <init|ps>")
+			fmt.Fprintln(stderr, "Usage: okestra project <init|ps>")
 			return 1
 		}
 		switch args[1] {
@@ -79,7 +81,7 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 		case "ps":
 			return runProjectPS(ctx, cfg, args[2:], stdout, stderr)
 		}
-		fmt.Fprintln(stderr, "usage: okestra project <init|ps>")
+		fmt.Fprintln(stderr, "Usage: okestra project <init|ps>")
 		return 1
 	case "up":
 		return runProjectUp(ctx, cfg, args[1:], stdout, stderr)
@@ -125,7 +127,7 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 
 func runInitCommands(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "service" {
-		fmt.Fprintln(stderr, "usage: okestra init service [--addr addr] [--data-dir dir] [--token token]")
+		fmt.Fprintln(stderr, "Usage: okestra init service [--addr addr] [--data-dir dir] [--token token]")
 		return 1
 	}
 	fs := flag.NewFlagSet("init service", flag.ContinueOnError)
@@ -150,12 +152,12 @@ func runInitCommands(args []string, stdout, stderr io.Writer) int {
 
 func runAgentCommands(cfgPath string, cfg *Config, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: okestra server <add|use|list|remove>")
+		fmt.Fprintln(stderr, "Usage: okestra server <add|use|list|remove>")
 		return 1
 	}
 	switch args[0] {
 	case "add":
-		fs := flag.NewFlagSet("agent add", flag.ContinueOnError)
+		fs := flag.NewFlagSet("server add", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		var name, endpoint, token, workspace string
 		var insecureSkipVerify bool
@@ -191,18 +193,18 @@ func runAgentCommands(cfgPath string, cfg *Config, args []string, stdout, stderr
 			fmt.Fprintf(stderr, "save config: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "added server %s (%s)\n", name, endpoint)
+		fmt.Fprintf(stdout, "Server %s added (%s).\n", name, endpoint)
 		if strings.HasPrefix(endpoint, "http://") {
-			fmt.Fprintln(stderr, "warning: HTTP is appropriate only when the underlying private network is encrypted or otherwise trusted")
+			fmt.Fprintln(stderr, "Warning: Use HTTP only on an encrypted or otherwise trusted private network.")
 		}
 		return 0
 	case "use":
 		if len(args) < 2 {
-			fmt.Fprintln(stderr, "usage: okestra agent use <name>")
+			fmt.Fprintln(stderr, "Usage: okestra server use <name>")
 			return 1
 		}
 		if _, ok := cfg.Agents[args[1]]; !ok {
-			fmt.Fprintf(stderr, "agent %s not found\n", args[1])
+			fmt.Fprintf(stderr, "Server %s was not found.\n", args[1])
 			return 1
 		}
 		cfg.ActiveAgent = args[1]
@@ -210,7 +212,7 @@ func runAgentCommands(cfgPath string, cfg *Config, args []string, stdout, stderr
 			fmt.Fprintf(stderr, "save config: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "active agent set to %s\n", args[1])
+		fmt.Fprintf(stdout, "Active server set to %s.\n", args[1])
 		return 0
 	case "list":
 		for name, agent := range cfg.Agents {
@@ -223,7 +225,7 @@ func runAgentCommands(cfgPath string, cfg *Config, args []string, stdout, stderr
 		return 0
 	case "remove":
 		if len(args) != 2 {
-			fmt.Fprintln(stderr, "usage: okestra server remove <name>")
+			fmt.Fprintln(stderr, "Usage: okestra server remove <name>")
 			return 1
 		}
 		if _, ok := cfg.Agents[args[1]]; !ok {
@@ -238,10 +240,10 @@ func runAgentCommands(cfgPath string, cfg *Config, args []string, stdout, stderr
 			fmt.Fprintf(stderr, "save config: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "removed server %s\n", args[1])
+		fmt.Fprintf(stdout, "Server %s removed.\n", args[1])
 		return 0
 	default:
-		fmt.Fprintln(stderr, "usage: okestra server <add|use|list|remove>")
+		fmt.Fprintln(stderr, "Usage: okestra server <add|use|list|remove>")
 		return 1
 	}
 }
@@ -253,17 +255,24 @@ func runStatus(ctx context.Context, cfg *Config, stdout, stderr io.Writer) int {
 	}
 	status, err := api.Status(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "status: %v\n", err)
+		fmt.Fprintf(stderr, "Could not retrieve server status: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "endpoint: %s\n", profile.URL)
-	fmt.Fprintf(stdout, "service_healthy: %t\n", status.ServiceHealthy)
-	fmt.Fprintf(stdout, "docker_healthy: %t\n", status.DockerHealthy)
-	fmt.Fprintf(stdout, "service_version: %s\n", status.Version)
-	fmt.Fprintf(stdout, "protocol_version: %d\n", status.ProtocolVersion)
-	fmt.Fprintf(stdout, "active_operations: %d\n", len(status.ActiveOperations))
-	fmt.Fprintf(stdout, "active_tunnels: %d\n", len(status.ActiveTunnels))
+	fmt.Fprintf(stdout, "Server: %s\n", profile.URL)
+	fmt.Fprintf(stdout, "Service: %s\n", healthLabel(status.ServiceHealthy))
+	fmt.Fprintf(stdout, "Docker: %s\n", healthLabel(status.DockerHealthy))
+	fmt.Fprintf(stdout, "Service version: %s\n", status.Version)
+	fmt.Fprintf(stdout, "Protocol version: %d\n", status.ProtocolVersion)
+	fmt.Fprintf(stdout, "Active operations: %d\n", len(status.ActiveOperations))
+	fmt.Fprintf(stdout, "Active tunnels: %d\n", len(status.ActiveTunnels))
 	return 0
+}
+
+func healthLabel(healthy bool) string {
+	if healthy {
+		return "Healthy"
+	}
+	return "Unavailable"
 }
 
 func runDoctor(ctx context.Context, cfg *Config, stdout, stderr io.Writer) int {
@@ -280,16 +289,16 @@ func runDoctor(ctx context.Context, cfg *Config, stdout, stderr io.Writer) int {
 		report.Checks = append(report.Checks, item)
 	}
 
-	check("endpoint_reachable", api.Health(ctx))
+	check("Server reachable", api.Health(ctx))
 	status, err := api.Status(ctx)
-	check("auth_and_status", err)
+	check("Authentication and status", err)
 	if err == nil {
-		check("protocol_compatible", boolErr(status.ProtocolVersion == protocol.ProtocolVersion, fmt.Sprintf("service protocol %d, CLI protocol %d", status.ProtocolVersion, protocol.ProtocolVersion)))
-		check("service_healthy", boolErr(status.ServiceHealthy, "service unhealthy"))
-		check("docker_healthy", boolErr(status.DockerHealthy, "docker unhealthy"))
+		check("Protocol compatibility", boolErr(status.ProtocolVersion == protocol.ProtocolVersion, fmt.Sprintf("service protocol %d, CLI protocol %d", status.ProtocolVersion, protocol.ProtocolVersion)))
+		check("Service health", boolErr(status.ServiceHealthy, "service is unhealthy"))
+		check("Docker health", boolErr(status.DockerHealthy, "Docker is unavailable"))
 	}
-	check("build_upload_and_stream", verifyDoctorBuild(ctx, api))
-	check("tunnel_path", VerifySelfTestTunnel(ctx, api))
+	check("Build upload and streaming", verifyDoctorBuild(ctx, api))
+	check("Tunnel connection", VerifySelfTestTunnel(ctx, api))
 
 	report.OK = true
 	for _, item := range report.Checks {
@@ -299,9 +308,9 @@ func runDoctor(ctx context.Context, cfg *Config, stdout, stderr io.Writer) int {
 		}
 	}
 	for _, item := range report.Checks {
-		state := "ok"
+		state := "PASS"
 		if !item.OK {
-			state = "fail"
+			state = "FAIL"
 		}
 		if item.Message != "" {
 			fmt.Fprintf(stdout, "%s\t%s\t%s\n", item.Name, state, item.Message)
@@ -310,10 +319,10 @@ func runDoctor(ctx context.Context, cfg *Config, stdout, stderr io.Writer) int {
 		}
 	}
 	if !report.OK {
-		fmt.Fprintf(stderr, "doctor: service at %s is not usable yet\n", profile.URL)
+		fmt.Fprintf(stderr, "Diagnostics failed: the service at %s is not ready.\n", profile.URL)
 		return 1
 	}
-	fmt.Fprintf(stdout, "doctor\tok\t%s\n", profile.URL)
+	fmt.Fprintf(stdout, "Diagnostics passed for %s.\n", profile.URL)
 	return 0
 }
 
@@ -391,7 +400,7 @@ func runRun(ctx context.Context, cfg *Config, args []string, stdout, stderr io.W
 		return 1
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintln(stderr, "usage: okestra run [--name name] [-p local:remote] [--env-file path] <image> [cmd...]")
+		fmt.Fprintln(stderr, "Usage: okestra run [--name name] [-p local:remote] [--env-file path] <image> [cmd...]")
 		return 1
 	}
 	image := fs.Arg(0)
@@ -440,7 +449,7 @@ func runRun(ctx context.Context, cfg *Config, args []string, stdout, stderr io.W
 		fmt.Fprintf(stderr, "run container: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "container: %s\n", result.ContainerID)
+	fmt.Fprintf(stdout, "Container: %s\n", result.ContainerID)
 	// docker run -d can return successfully even when the process exits immediately.
 	// Check after a short startup window before advertising a usable local port.
 	select {
@@ -473,10 +482,10 @@ func runRun(ctx context.Context, cfg *Config, args []string, stdout, stderr io.W
 			return 1
 		}
 		activeForwards = append(activeForwards, forward)
-		fmt.Fprintf(stdout, "forwarding localhost:%d -> %s:%d\n", pm.LocalPort, result.ContainerID, pm.RemotePort)
+		fmt.Fprintf(stdout, "Forwarding localhost:%d → %s:%d\n", pm.LocalPort, result.ContainerID, pm.RemotePort)
 	}
 	if len(pms) == 0 {
-		fmt.Fprintln(stdout, "no local port forward requested; use -p LOCAL:CONTAINER to open localhost")
+		fmt.Fprintln(stdout, "No local port forward requested. Use -p LOCAL:CONTAINER to expose a port on localhost.")
 	}
 	if len(pms) > 0 {
 		forwardErrors := make(chan error, len(activeForwards))
@@ -571,7 +580,7 @@ func runLogs(ctx context.Context, cfg *Config, args []string, stdout, stderr io.
 		return 1
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: okestra logs [-f] [--tail N] <container>")
+		fmt.Fprintln(stderr, "Usage: okestra logs [-f] [--tail N] <container>")
 		return 1
 	}
 	if tail < 0 || tail > 10000 {
@@ -610,7 +619,7 @@ func runExec(ctx context.Context, cfg *Config, args []string, stdout, stderr io.
 		return 1
 	}
 	if fs.NArg() < 2 {
-		fmt.Fprintln(stderr, "usage: okestra exec [-it] <container> <command...>")
+		fmt.Fprintln(stderr, "Usage: okestra exec [-it] <container> <command...>")
 		return 1
 	}
 	containerID := fs.Arg(0)
@@ -656,7 +665,7 @@ func runStop(ctx context.Context, cfg *Config, args []string, stdout, stderr io.
 		return 1
 	}
 	if len(args) != 1 {
-		fmt.Fprintln(stderr, "usage: okestra stop <container>")
+		fmt.Fprintln(stderr, "Usage: okestra stop <container>")
 		return 1
 	}
 	if err := api.StopContainer(ctx, args[0]); err != nil {
@@ -673,7 +682,7 @@ func runRM(ctx context.Context, cfg *Config, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	if len(args) != 1 {
-		fmt.Fprintln(stderr, "usage: okestra rm <container>")
+		fmt.Fprintln(stderr, "Usage: okestra rm <container>")
 		return 1
 	}
 	if err := api.RemoveContainer(ctx, args[0]); err != nil {
@@ -706,7 +715,7 @@ func runRMI(ctx context.Context, cfg *Config, args []string, stdout, stderr io.W
 		return 1
 	}
 	if len(args) != 1 {
-		fmt.Fprintln(stderr, "usage: okestra rmi <image>")
+		fmt.Fprintln(stderr, "Usage: okestra rmi <image>")
 		return 1
 	}
 	if err := api.RemoveImage(ctx, args[0]); err != nil {
@@ -723,7 +732,7 @@ func runPortForward(ctx context.Context, cfg *Config, args []string, stdout, std
 		return 1
 	}
 	if len(args) != 2 {
-		fmt.Fprintln(stderr, "usage: okestra port-forward <container> <local>:<remote>")
+		fmt.Fprintln(stderr, "Usage: okestra port-forward <container> <local>:<remote>")
 		return 1
 	}
 	mappings, err := parsePortMappings([]string{args[1]})
@@ -804,7 +813,12 @@ func shortID(id string) string {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "okestra commands:")
+	fmt.Fprintln(w, "Okestra — remote Docker workspace")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Usage: okestra <command> [options]")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  android (Flutter sessions, emulator, local ADB and Mac viewer)")
 	fmt.Fprintln(w, "  version")
 	fmt.Fprintln(w, "  upgrade [--check]")
 	fmt.Fprintln(w, "  init service [--addr addr] [--data-dir dir] [--token token]")

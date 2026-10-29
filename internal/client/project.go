@@ -21,6 +21,7 @@ import (
 // Project is intentionally smaller than Compose: it declares only what
 // Okestra can manage safely across a private connection.
 type Project struct {
+	Android  *AndroidProject           `json:"android,omitempty"`
 	Name     string                    `json:"name"`
 	Services map[string]ProjectService `json:"services"`
 }
@@ -71,10 +72,18 @@ func loadProject(path string) (Project, string, []string, error) {
 }
 
 func (p Project) validate() ([]string, error) {
+	if p.Android != nil {
+		if p.Name == "device" {
+			return nil, errors.New("device is reserved for the managed Android emulator")
+		}
+		if err := p.Android.validate(); err != nil {
+			return nil, err
+		}
+	}
 	if !projectName.MatchString(p.Name) || len(p.Name) > 48 {
 		return nil, errors.New("project name must be lowercase letters, digits, hyphens and at most 48 characters")
 	}
-	if len(p.Services) == 0 {
+	if len(p.Services) == 0 && p.Android == nil {
 		return nil, errors.New("project must contain at least one service")
 	}
 	if len(p.Services) > 32 {
@@ -160,7 +169,7 @@ func (p Project) runRequest(name string, svc ProjectService, base string) (proto
 		}
 		env, err = readEnvFile(path)
 		if err != nil {
-			return protocol.RunRequest{}, fmt.Errorf("service %s env_file: %w", name, err)
+			return protocol.RunRequest{}, fmt.Errorf("service %s environment file: %w", name, err)
 		}
 	}
 	for k, v := range svc.Environment {
@@ -217,12 +226,12 @@ func localProjectPath(base, path string) (string, error) {
 
 func runProjectInit(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 0 {
-		fmt.Fprintln(stderr, "usage: okestra project init")
+		fmt.Fprintln(stderr, "Usage: okestra project init")
 		return 1
 	}
 	const file = "okestra.json"
 	if _, err := os.Stat(file); err == nil {
-		fmt.Fprintln(stderr, "okestra.json already exists")
+		fmt.Fprintln(stderr, "okestra.json already exists.")
 		return 1
 	} else if !os.IsNotExist(err) {
 		fmt.Fprintln(stderr, err)
@@ -245,7 +254,7 @@ func runProjectInit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	fmt.Fprintln(stdout, "created okestra.json; edit image/build and ports, then run okestra up")
+	fmt.Fprintln(stdout, "Created okestra.json. Configure its image or build and ports, then run okestra up.")
 	return 0
 }
 
@@ -262,7 +271,7 @@ func runProjectUp(ctx context.Context, cfg *Config, args []string, stdout, stder
 	fs.BoolVar(&recreate, "recreate", false, "replace existing containers")
 	fs.StringVar(&onlyService, "service", "", "operate on one service")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: okestra up [-f okestra.json] [--build] [--recreate]")
+		fmt.Fprintln(stderr, "Usage: okestra up [-f okestra.json] [--build] [--recreate]")
 		return 1
 	}
 	project, base, order, err := loadProject(file)
@@ -398,14 +407,14 @@ func runProjectUp(ctx context.Context, cfg *Config, args []string, stdout, stder
 						return 1
 					}
 				}
-				fmt.Fprintf(stdout, "%s: already running\n", name)
+				fmt.Fprintf(stdout, "%s: Already running.\n", name)
 				continue
 			}
 			if err := api.StartContainer(ctx, req.Name); err != nil {
 				fmt.Fprintf(stderr, "start %s: %v\n", name, err)
 				return 1
 			}
-			fmt.Fprintf(stdout, "%s: started\n", name)
+			fmt.Fprintf(stdout, "%s: Started.\n", name)
 			if err := waitProjectService(ctx, api, req.Name, svc.Health != nil, false); err != nil {
 				fmt.Fprintf(stderr, "%s: %v. Run: okestra why %s\n", name, err, req.Name)
 				return 1
@@ -433,7 +442,7 @@ func runProjectUp(ctx context.Context, cfg *Config, args []string, stdout, stder
 				fmt.Fprintf(stderr, "build %s: %v\n", name, err)
 				return 1
 			}
-			fmt.Fprintf(stdout, "building %s...\n", name)
+			fmt.Fprintf(stdout, "Building %s…\n", name)
 			if err := api.StreamOperation(ctx, opID, func(env protocol.StreamEnvelope) error {
 				if len(env.Data) > 0 {
 					_, _ = stdout.Write(env.Data)
@@ -463,7 +472,7 @@ func runProjectUp(ctx context.Context, cfg *Config, args []string, stdout, stder
 			fmt.Fprintf(stderr, "run %s: %v\n", name, err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "%s: created\n", name)
+		fmt.Fprintf(stdout, "%s: Created.\n", name)
 		// Docker run -d can succeed before an application crashes. Surface that
 		// state here rather than suggesting that a dead service is ready.
 		if err := waitProjectService(ctx, api, req.Name, svc.Health != nil, true); err != nil {
@@ -473,9 +482,9 @@ func runProjectUp(ctx context.Context, cfg *Config, args []string, stdout, stder
 	}
 	allOrder, _ := project.validate()
 	if connectedErr == nil && sameForwardPorts(connected.Ports, projectForwardPorts(project, allOrder)) {
-		fmt.Fprintf(stdout, "project %s is up; local forwards are active.\n", project.Name)
+		fmt.Fprintf(stdout, "Project %s is running. Local port forwards are active.\n", project.Name)
 	} else {
-		fmt.Fprintf(stdout, "project %s is up. Run `okestra connect` to expose or refresh its local ports.\n", project.Name)
+		fmt.Fprintf(stdout, "Project %s is running. Run `okestra connect` to expose or refresh its local ports.\n", project.Name)
 	}
 	return 0
 }
@@ -519,7 +528,7 @@ func runProjectDown(ctx context.Context, cfg *Config, args []string, stdout, std
 	var file string
 	fs.StringVar(&file, "f", "okestra.json", "project manifest")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: okestra down [-f okestra.json]")
+		fmt.Fprintln(stderr, "Usage: okestra down [-f okestra.json]")
 		return 1
 	}
 	project, _, order, err := loadProject(file)
@@ -557,7 +566,7 @@ func runProjectDown(ctx context.Context, cfg *Config, args []string, stdout, std
 	}
 	if connected, err := queryForward(forwardSocket(project.Name), "status"); err == nil && connected.Endpoint == profile.URL {
 		_, _ = queryForward(forwardSocket(project.Name), "shutdown")
-		fmt.Fprintf(stdout, "disconnected %s\n", project.Name)
+		fmt.Fprintf(stdout, "Disconnected %s.\n", project.Name)
 	}
 	for i := len(order) - 1; i >= 0; i-- {
 		name := project.containerName(order[i])
@@ -583,13 +592,13 @@ func runProjectDown(ctx context.Context, cfg *Config, args []string, stdout, std
 			fmt.Fprintf(stderr, "remove %s: %v\n", name, err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "removed %s\n", name)
+		fmt.Fprintf(stdout, "Removed %s.\n", name)
 	}
 	if err := api.RemoveNetwork(ctx, project.networkName()); err != nil {
 		fmt.Fprintf(stderr, "network removal: %v\n", err)
 		return 1
 	}
-	fmt.Fprintln(stdout, "project stopped; named volumes were kept")
+	fmt.Fprintln(stdout, "Project stopped. Named volumes were kept.")
 	return 0
 }
 
@@ -599,7 +608,7 @@ func runProjectPS(ctx context.Context, cfg *Config, args []string, stdout, stder
 	var file string
 	fs.StringVar(&file, "f", "okestra.json", "project manifest")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: okestra project ps [-f okestra.json]")
+		fmt.Fprintln(stderr, "Usage: okestra project ps [-f okestra.json]")
 		return 1
 	}
 	project, _, order, err := loadProject(file)
@@ -623,7 +632,7 @@ func runProjectPS(ctx context.Context, cfg *Config, args []string, stdout, stder
 	for _, name := range order {
 		item, ok := byName[project.containerName(name)]
 		if !ok {
-			fmt.Fprintf(stdout, "%s\tmissing\n", name)
+			fmt.Fprintf(stdout, "%s\tNot created\n", name)
 		} else {
 			fmt.Fprintf(stdout, "%s\t%s\t%s\n", name, item.Status, item.Image)
 		}
@@ -633,7 +642,7 @@ func runProjectPS(ctx context.Context, cfg *Config, args []string, stdout, stder
 
 func runWhy(ctx context.Context, cfg *Config, args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
-		fmt.Fprintln(stderr, "usage: okestra why <container>")
+		fmt.Fprintln(stderr, "Usage: okestra why <container>")
 		return 1
 	}
 	_, api, ok := activeAPI(cfg, stderr)
@@ -645,47 +654,47 @@ func runWhy(ctx context.Context, cfg *Config, args []string, stdout, stderr io.W
 		fmt.Fprintf(stderr, "inspect: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "container: %s\nimage: %s\nstate: %s\nexit_code: %d\nrestarts: %d\n", d.Name, d.Image, d.Status, d.ExitCode, d.RestartCount)
+	fmt.Fprintf(stdout, "Container: %s\nImage: %s\nState: %s\nExit code: %d\nRestarts: %d\n", d.Name, d.Image, d.Status, d.ExitCode, d.RestartCount)
 	if d.Health != "" {
-		fmt.Fprintf(stdout, "health: %s\n", d.Health)
+		fmt.Fprintf(stdout, "Health: %s\n", d.Health)
 	}
 	if d.Error != "" {
-		fmt.Fprintf(stdout, "docker_error: %s\n", d.Error)
+		fmt.Fprintf(stdout, "Docker error: %s\n", d.Error)
 	}
 	if len(d.Networks) > 0 {
-		fmt.Fprintf(stdout, "networks: %s\n", strings.Join(d.Networks, ", "))
+		fmt.Fprintf(stdout, "Networks: %s\n", strings.Join(d.Networks, ", "))
 	}
 	if len(d.Ports) > 0 {
-		fmt.Fprintf(stdout, "container_ports: %s\n", strings.Join(d.Ports, ", "))
+		fmt.Fprintf(stdout, "Container ports: %s\n", strings.Join(d.Ports, ", "))
 	}
 	if ports := d.Labels["dev.okestra.ports"]; ports != "" {
-		fmt.Fprintf(stdout, "local_forward_mappings: %s\n", ports)
+		fmt.Fprintf(stdout, "Local port mappings: %s\n", ports)
 		if project := d.Labels["dev.okestra.project"]; project != "" {
 			if status, err := queryForward(forwardSocket(project), "status"); err == nil {
-				fmt.Fprintf(stdout, "local_forward: active (%s)\n", status.Endpoint)
+				fmt.Fprintf(stdout, "Local connection: Active (%s)\n", status.Endpoint)
 			} else {
-				fmt.Fprintln(stdout, "local_forward: not connected; run okestra connect from the project directory")
+				fmt.Fprintln(stdout, "Local connection: Disconnected. Run okestra connect from the project directory.")
 			}
 		}
 	}
 	if d.OOMKilled {
-		fmt.Fprintln(stdout, "hint: Docker killed the process for exceeding available memory.")
+		fmt.Fprintln(stdout, "Hint: Docker stopped the process because it exceeded available memory.")
 	}
 	if !d.Running && d.ExitCode != 0 {
-		fmt.Fprintln(stdout, "hint: the application exited. Check required environment variables and the logs below.")
+		fmt.Fprintln(stdout, "Hint: The application exited. Check required environment variables and the logs below.")
 	}
 	logsLower := strings.ToLower(d.RecentLogs)
 	if strings.Contains(logsLower, "econnrefused") || strings.Contains(logsLower, "connection refused") {
-		fmt.Fprintln(stdout, "hint: a dependency refused a connection; verify its service health and use its project DNS name.")
+		fmt.Fprintln(stdout, "Hint: A dependency refused a connection. Verify its health and use its project DNS name.")
 	}
 	if strings.Contains(logsLower, "enotfound") || strings.Contains(logsLower, "name or service not known") {
-		fmt.Fprintln(stdout, "hint: DNS lookup failed; sibling services resolve by their service names on the project network.")
+		fmt.Fprintln(stdout, "Hint: DNS lookup failed. Services resolve by name on the project network.")
 	}
 	if d.Running && d.Health == "unhealthy" {
-		fmt.Fprintln(stdout, "hint: the process is running, but its health check is failing.")
+		fmt.Fprintln(stdout, "Hint: The process is running, but its health check is failing.")
 	}
 	if d.RecentLogs != "" {
-		fmt.Fprintln(stdout, "recent logs:")
+		fmt.Fprintln(stdout, "Recent logs:")
 		fmt.Fprint(stdout, d.RecentLogs)
 		if !strings.HasSuffix(d.RecentLogs, "\n") {
 			fmt.Fprintln(stdout)

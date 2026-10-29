@@ -30,6 +30,10 @@ The service needs no database and no cloud control plane. Runtime state is delib
 - Save and switch between named server profiles.
 - Verify the complete connection with `okestra doctor`.
 
+## Flutter, Expo development builds, and remote Android
+
+Okestra can also run Flutter debug sessions on the server, connect the remote emulator to local ADB, and open the custom native Okestra Device app on your Mac. Android is opt-in and currently targets one developer and one x86_64 Linux emulator. Expo development builds also support server-side dependency installation, Android builds, private Metro, Fast Refresh, and development-menu controls. See [Expo setup and usage](docs/expo.md) and [Android setup and usage](docs/android.md) for server setup, menu bar controls, source sync, and acceptance checks.
+
 ## Guided installation on your private network
 
 Requirements:

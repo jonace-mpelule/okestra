@@ -24,7 +24,7 @@ func runWatch(ctx context.Context, cfg *Config, args []string, stdout, stderr io
 	flags.StringVar(&file, "f", "okestra.json", "project manifest")
 	flags.StringVar(&service, "service", "", "watch only this service")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: okestra watch [-f okestra.json] [--service name]")
+		fmt.Fprintln(stderr, "Usage: okestra watch [-f okestra.json] [--service name]")
 		return 1
 	}
 	p, base, order, err := loadProject(file)
@@ -47,7 +47,7 @@ func runWatch(ctx context.Context, cfg *Config, args []string, stdout, stderr io
 		}
 	}
 	if len(builds) == 0 {
-		fmt.Fprintln(stderr, "no build services selected; watch needs a local build context")
+		fmt.Fprintln(stderr, "No build services selected. Watch requires a local build context.")
 		return 1
 	}
 	if code := runProjectUp(ctx, cfg, []string{"-f", file}, stdout, stderr); code != 0 {
@@ -62,7 +62,7 @@ func runWatch(ctx context.Context, cfg *Config, args []string, stdout, stderr io
 		}
 		last[name] = digest
 	}
-	fmt.Fprintln(stdout, "watching source for changes (Ctrl-C to stop)")
+	fmt.Fprintln(stdout, "Watching source for changes. Press Ctrl-C to stop.")
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -96,9 +96,9 @@ func runWatch(ctx context.Context, cfg *Config, args []string, stdout, stderr io
 				fmt.Fprintf(stderr, "watch %s: %v\n", name, err)
 				continue
 			}
-			fmt.Fprintf(stdout, "change detected in %s; rebuilding...\n", name)
+			fmt.Fprintf(stdout, "Changes detected in %s. Rebuilding…\n", name)
 			if runProjectUp(ctx, cfg, []string{"-f", file, "--service", name, "--build", "--recreate"}, stdout, stderr) != 0 {
-				fmt.Fprintf(stderr, "%s rebuild failed; watching for the next change\n", name)
+				fmt.Fprintf(stderr, "%s: Rebuild failed. Watching for the next change.\n", name)
 			}
 			last[name] = digest
 		}

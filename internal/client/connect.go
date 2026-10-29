@@ -37,7 +37,7 @@ func runConnect(ctx context.Context, cfg *Config, args []string, stdout, stderr 
 	var file string
 	fs.StringVar(&file, "f", "okestra.json", "project manifest")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: okestra connect [-f okestra.json]")
+		fmt.Fprintln(stderr, "Usage: okestra connect [-f okestra.json]")
 		return 1
 	}
 	p, _, order, err := loadProject(file)
@@ -68,7 +68,7 @@ func runConnect(ctx context.Context, cfg *Config, args []string, stdout, stderr 
 			return 1
 		}
 		if sameForwardPorts(old.Ports, projectForwardPorts(p, order)) {
-			fmt.Fprintf(stdout, "already connected: %s (%s)\n", p.Name, old.Endpoint)
+			fmt.Fprintf(stdout, "Already connected: %s (%s).\n", p.Name, old.Endpoint)
 			return 0
 		}
 		oldLocals := map[int]bool{}
@@ -182,7 +182,7 @@ func runConnect(ctx context.Context, cfg *Config, args []string, stdout, stderr 
 				fmt.Fprintln(stderr, "another server owns this project's forward; disconnect it first")
 				return 1
 			}
-			fmt.Fprintf(stdout, "connected %s to %s (PID %d)\n", p.Name, status.Endpoint, status.PID)
+			fmt.Fprintf(stdout, "Connected %s to %s (PID %d).\n", p.Name, status.Endpoint, status.PID)
 			for _, port := range status.Ports {
 				fmt.Fprintf(stdout, "%s\n", port)
 			}
@@ -232,7 +232,7 @@ func runDisconnect(args []string, stdout, stderr io.Writer) int {
 	var file string
 	fs.StringVar(&file, "f", "okestra.json", "project manifest")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: okestra disconnect [-f okestra.json]")
+		fmt.Fprintln(stderr, "Usage: okestra disconnect [-f okestra.json]")
 		return 1
 	}
 	p, _, _, err := loadProject(file)
@@ -244,7 +244,7 @@ func runDisconnect(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "not connected: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "disconnected %s\n", p.Name)
+	fmt.Fprintf(stdout, "Disconnected %s.\n", p.Name)
 	return 0
 }
 

@@ -784,7 +784,7 @@ func (a *API) readJSONStream(ctx context.Context, wsURL string, fn func(protocol
 		if err := json.Unmarshal(data, &env); err != nil {
 			var apiErr protocol.APIError
 			if jerr := json.Unmarshal(data, &apiErr); jerr == nil && apiErr.Code != "" {
-				return fmt.Errorf("%s: %s", apiErr.Code, apiErr.Message)
+				return fmt.Errorf("%s: %s", humanizeErrorCode(apiErr.Code), apiErr.Message)
 			}
 			return err
 		}
@@ -828,9 +828,18 @@ func wsURL(base, path string) string {
 func decodeAPIError(resp *http.Response) error {
 	var apiErr protocol.APIError
 	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err == nil && apiErr.Code != "" {
-		return fmt.Errorf("%s: %s", apiErr.Code, apiErr.Message)
+		return fmt.Errorf("%s: %s", humanizeErrorCode(apiErr.Code), apiErr.Message)
 	}
-	return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	return fmt.Errorf("unexpected server response (HTTP %d)", resp.StatusCode)
+}
+
+func humanizeErrorCode(code string) string {
+	words := strings.Fields(strings.ReplaceAll(code, "_", " "))
+	if len(words) == 0 {
+		return "Server error"
+	}
+	label := strings.Join(words, " ")
+	return strings.ToUpper(label[:1]) + label[1:]
 }
 
 func boolToInt(v bool) int {

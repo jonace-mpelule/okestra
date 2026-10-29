@@ -19,8 +19,15 @@ for arch in arm64 x86_64; do
 done
 lipo -create "$BUILD_DIR/OkestraMenu-arm64" "$BUILD_DIR/OkestraMenu-x86_64" \
   -output "$APP/Contents/MacOS/OkestraMenu"
+mkdir -p "$APP/Contents/Helpers"
+for arch in arm64 x86_64; do
+ if [ "$arch" = arm64 ]; then goarch=arm64; else goarch=amd64; fi
+ GOOS=darwin GOARCH=$goarch go build -trimpath -ldflags "${OKESTRA_LDFLAGS:-}" -o "$BUILD_DIR/okestra-$arch" "$ROOT/cmd/okestra"
+done
+lipo -create "$BUILD_DIR/okestra-arm64" "$BUILD_DIR/okestra-x86_64" -output "$APP/Contents/Helpers/okestra"
 cp "$ROOT/apps/okestra-menubar/Info.plist" "$APP/Contents/Info.plist"
 if [ -n "${OKESTRA_VERSION:-}" ]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $OKESTRA_VERSION" "$APP/Contents/Info.plist"
 fi
+codesign --force --deep --sign - "$APP"
 printf 'Built %s\n' "$APP"

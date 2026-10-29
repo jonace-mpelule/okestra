@@ -175,6 +175,9 @@ func Upgrade(ctx context.Context, role string, checkOnly bool, out io.Writer) er
 	if err != nil {
 		return err
 	}
+	if strings.Contains(filepath.ToSlash(exe), ".app/Contents/Helpers/") {
+		return errors.New("upgrade using the installed terminal CLI; bundled helpers are updated with the whole app")
+	}
 	if filepath.Base(exe) != role {
 		return fmt.Errorf("run the installed %s binary to upgrade (currently %s)", role, exe)
 	}
@@ -270,86 +273,125 @@ func Upgrade(ctx context.Context, role string, checkOnly bool, out io.Writer) er
 	}
 	if role == "okestra" && runtime.GOOS == "darwin" {
 		if err := installMenuApp(release.archiveData); err != nil {
-			return fmt.Errorf("CLI upgraded, but menu app update failed: %w", err)
+			return fmt.Errorf("CLI upgraded, but Mac app update failed: %w", err)
 		}
 	}
 	fmt.Fprintf(out, "upgraded %s to %s\n", role, release.Tag)
 	return nil
 }
 
-func installMenuApp(archive []byte) error {
+// extractMacApps preserves complete signed bundles, including the matching CLI and capture component.
+func extractMacApps(archive []byte, dir string) ([]string, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer zr.Close()
 	tr := tar.NewReader(zr)
-	dir, err := os.MkdirTemp("", "okestra-menu-*")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-	app := filepath.Join(dir, "Okestra Menu.app")
 	seen := map[string]bool{}
+	apps := map[string]bool{}
+	var total int64
 	for {
-		hdr, err := tr.Next()
+		header, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
-		path := strings.TrimPrefix(hdr.Name, "./")
-		if !strings.HasPrefix(path, "Okestra Menu.app/") || hdr.Typeflag != tar.TypeReg {
+		path := strings.TrimPrefix(header.Name, "./")
+		app, relative, found := strings.Cut(path, "/")
+		if !found || (app != "Okestra Menu.app" && app != "Okestra Device.app") {
 			continue
 		}
-		rel := strings.TrimPrefix(path, "Okestra Menu.app/")
-		if rel != "Contents/Info.plist" && rel != "Contents/MacOS/OkestraMenu" {
+		if header.Typeflag == tar.TypeDir {
 			continue
 		}
-		if hdr.Size < 1 || hdr.Size > 50<<20 {
-			return errors.New("invalid menu app file size")
+		if header.Typeflag != tar.TypeReg || !strings.HasPrefix(relative, "Contents/") || filepath.ToSlash(filepath.Clean(relative)) != relative || strings.Contains(relative, "\\") || seen[path] {
+			return nil, errors.New("invalid or duplicate Mac app archive entry")
 		}
-		dest := filepath.Join(app, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return err
+		total += header.Size
+		if header.Size < 0 || header.Size > 50<<20 || total > 150<<20 || len(seen) > 300 {
+			return nil, errors.New("Mac app archive exceeds size limits")
 		}
-		data, err := io.ReadAll(io.LimitReader(tr, 50<<20+1))
+		target := filepath.Join(dir, app, relative)
+		if err = os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return nil, err
+		}
+		mode := os.FileMode(0644)
+		if strings.HasPrefix(relative, "Contents/MacOS/") || strings.HasPrefix(relative, "Contents/Helpers/") {
+			mode = 0755
+		}
+		f, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if int64(len(data)) != hdr.Size {
-			return errors.New("truncated menu app file")
+		_, err = io.CopyN(f, tr, header.Size)
+		closeErr := f.Close()
+		if err != nil {
+			return nil, err
 		}
-		mode := os.FileMode(0o644)
-		if rel == "Contents/MacOS/OkestraMenu" {
-			mode = 0o755
+		if closeErr != nil {
+			return nil, closeErr
 		}
-		if seen[rel] {
-			return fmt.Errorf("duplicate menu app file %s", rel)
-		}
-		if err := os.WriteFile(dest, data, mode); err != nil {
-			return err
-		}
-		seen[rel] = true
+		seen[path] = true
+		apps[app] = true
 	}
-	if len(seen) == 0 {
-		return nil
-	} // Older CLI archives did not ship a menu app.
-	if !seen["Contents/Info.plist"] || !seen["Contents/MacOS/OkestraMenu"] {
-		return errors.New("incomplete menu app in release archive")
+	var result []string
+	for _, app := range []string{"Okestra Menu.app", "Okestra Device.app"} {
+		if !apps[app] {
+			continue
+		}
+		executable := "OkestraMenu"
+		if app == "Okestra Device.app" {
+			executable = "OkestraDevice"
+		}
+		if !seen[app+"/Contents/Info.plist"] || !seen[app+"/Contents/MacOS/"+executable] {
+			return nil, fmt.Errorf("incomplete %s in release", app)
+		}
+		if app == "Okestra Device.app" && (!seen[app+"/Contents/Helpers/okestra"] || !seen[app+"/Contents/Resources/scrcpy-server-3.3.4.jar"]) {
+			return nil, errors.New("incomplete device capture bundle")
+		}
+		result = append(result, app)
 	}
+	return result, nil
+}
+func installMenuApp(archive []byte) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
 	apps := filepath.Join(home, "Applications")
-	if err := os.MkdirAll(apps, 0o755); err != nil {
+	if err = os.MkdirAll(apps, 0755); err != nil {
 		return err
 	}
-	out, err := exec.Command("ditto", app, filepath.Join(apps, "Okestra Menu.app")).CombinedOutput()
+	stage, err := os.MkdirTemp(apps, ".okestra-update-*")
 	if err != nil {
-		return fmt.Errorf("ditto: %w: %s", err, strings.TrimSpace(string(out)))
+		return err
+	}
+	defer os.RemoveAll(stage)
+	names, err := extractMacApps(archive, stage)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		target := filepath.Join(apps, name)
+		backup := filepath.Join(stage, name+".previous")
+		hadOld := false
+		if _, err = os.Lstat(target); err == nil {
+			if err = os.Rename(target, backup); err != nil {
+				return err
+			}
+			hadOld = true
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err = os.Rename(filepath.Join(stage, name), target); err != nil {
+			if hadOld {
+				_ = os.Rename(backup, target)
+			}
+			return err
+		}
 	}
 	return nil
 }

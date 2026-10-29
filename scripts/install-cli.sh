@@ -10,9 +10,10 @@ fi
 BINARY=$DEFAULT_BINARY
 DESTINATION=${OKESTRA_INSTALL_BIN:-/usr/local/bin/okestra}
 MODE=menu
+ANDROID=no
 
 usage() {
-  printf '%s\n' 'Usage: install-cli.sh [--yes | --install-only | --connect-only] [path-to-okestra]'
+  printf '%s\n' 'Usage: install-cli.sh [--android] [--yes | --install-only | --connect-only] [path-to-okestra]'
   printf '%s\n' 'Guided menu opens automatically in a terminal.'
   printf '%s\n' 'For unattended pairing, set OKESTRA_SETUP_NAME, OKESTRA_SETUP_URL and OKESTRA_TOKEN.'
 }
@@ -20,6 +21,7 @@ usage() {
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --yes) MODE=yes ;;
+    --android) ANDROID=yes ;;
     --install-only) MODE=install-only ;;
     --connect-only) MODE=connect-only ;;
     --help|-h) usage; exit 0 ;;
@@ -39,8 +41,11 @@ install_cli() {
     exit 1
   fi
   if [ ! -d "$(dirname "$DESTINATION")" ]; then
-    printf 'Install directory does not exist: %s\n' "$(dirname "$DESTINATION")" >&2
-    exit 1
+    if [ -w "$(dirname "$(dirname "$DESTINATION")")" ]; then
+      mkdir -p "$(dirname "$DESTINATION")"
+    else
+      sudo mkdir -p "$(dirname "$DESTINATION")"
+    fi
   fi
   if [ -w "$(dirname "$DESTINATION")" ]; then
     install -m 0755 "$BINARY" "$DESTINATION"
@@ -49,12 +54,26 @@ install_cli() {
   fi
   printf '\nInstalled %s\n' "$DESTINATION"
   "$DESTINATION" version
-  if [ "$(uname -s)" = Darwin ] && [ -d "$SCRIPT_DIR/Okestra Menu.app" ]; then
-    command -v ditto >/dev/null 2>&1 || { printf '%s\n' 'ditto is required to install the Mac menu app' >&2; exit 1; }
-    app_destination="$HOME/Applications/Okestra Menu.app"
-    mkdir -p "$HOME/Applications"
-    ditto "$SCRIPT_DIR/Okestra Menu.app" "$app_destination"
-    printf 'Installed %s (open it from Applications when ready)\n' "$app_destination"
+  if [ "$(uname -s)" = Darwin ]; then
+    for app in 'Okestra Menu.app' 'Okestra Device.app'; do
+      source_app="$SCRIPT_DIR/$app"
+      if [ ! -d "$source_app" ] && [ -d "$PROJECT_DIR/dist/$app" ]; then source_app="$PROJECT_DIR/dist/$app"; fi
+      if [ -d "$source_app" ]; then
+        mkdir -p "$HOME/Applications"
+        stage=$(mktemp -d "$HOME/Applications/.okestra-install.XXXXXX")
+        trap 'rm -rf "$stage"' EXIT HUP INT TERM
+        ditto "$source_app" "$stage/$app"
+        if [ -d "$HOME/Applications/$app" ]; then mv "$HOME/Applications/$app" "$stage/previous.app"; fi
+        if ! mv "$stage/$app" "$HOME/Applications/$app"; then
+          if [ -d "$stage/previous.app" ]; then mv "$stage/previous.app" "$HOME/Applications/$app"; fi
+          exit 1
+        fi
+        rm -rf "$stage"
+        trap - EXIT HUP INT TERM
+        printf 'Installed %s (quit and reopen it after an update)\n' "$HOME/Applications/$app"
+      fi
+    done
+    if [ "$ANDROID" = yes ]; then "$SCRIPT_DIR/setup-android-mac.sh"; fi
   fi
 }
 
