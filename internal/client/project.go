@@ -21,7 +21,6 @@ import (
 // Project is intentionally smaller than Compose: it declares only what
 // Okestra can manage safely across a private connection.
 type Project struct {
-	Android  *AndroidProject           `json:"android,omitempty"`
 	Name     string                    `json:"name"`
 	Services map[string]ProjectService `json:"services"`
 }
@@ -72,18 +71,10 @@ func loadProject(path string) (Project, string, []string, error) {
 }
 
 func (p Project) validate() ([]string, error) {
-	if p.Android != nil {
-		if p.Name == "device" {
-			return nil, errors.New("device is reserved for the managed Android emulator")
-		}
-		if err := p.Android.validate(); err != nil {
-			return nil, err
-		}
-	}
 	if !projectName.MatchString(p.Name) || len(p.Name) > 48 {
 		return nil, errors.New("project name must be lowercase letters, digits, hyphens and at most 48 characters")
 	}
-	if len(p.Services) == 0 && p.Android == nil {
+	if len(p.Services) == 0 {
 		return nil, errors.New("project must contain at least one service")
 	}
 	if len(p.Services) > 32 {

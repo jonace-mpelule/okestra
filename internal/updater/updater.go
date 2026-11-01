@@ -301,7 +301,7 @@ func extractMacApps(archive []byte, dir string) ([]string, error) {
 		}
 		path := strings.TrimPrefix(header.Name, "./")
 		app, relative, found := strings.Cut(path, "/")
-		if !found || (app != "Okestra Menu.app" && app != "Okestra Device.app") {
+		if !found || app != "Okestra Menu.app" {
 			continue
 		}
 		if header.Typeflag == tar.TypeDir {
@@ -338,19 +338,13 @@ func extractMacApps(archive []byte, dir string) ([]string, error) {
 		apps[app] = true
 	}
 	var result []string
-	for _, app := range []string{"Okestra Menu.app", "Okestra Device.app"} {
+	for _, app := range []string{"Okestra Menu.app"} {
 		if !apps[app] {
 			continue
 		}
 		executable := "OkestraMenu"
-		if app == "Okestra Device.app" {
-			executable = "OkestraDevice"
-		}
 		if !seen[app+"/Contents/Info.plist"] || !seen[app+"/Contents/MacOS/"+executable] {
 			return nil, fmt.Errorf("incomplete %s in release", app)
-		}
-		if app == "Okestra Device.app" && (!seen[app+"/Contents/Helpers/okestra"] || !seen[app+"/Contents/Resources/scrcpy-server-3.3.4.jar"]) {
-			return nil, errors.New("incomplete device capture bundle")
 		}
 		result = append(result, app)
 	}

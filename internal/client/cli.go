@@ -40,8 +40,6 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch args[0] {
-	case "android":
-		return runAndroid(ctx, cfg, args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintf(stdout, "okestra %s (commit %s, built %s)\n", version.Version, version.Commit, version.Date)
 		return 0
@@ -818,7 +816,6 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: okestra <command> [options]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Commands:")
-	fmt.Fprintln(w, "  android (device profiles, remote emulator, local ADB and Mac viewer)")
 	fmt.Fprintln(w, "  version")
 	fmt.Fprintln(w, "  upgrade [--check]")
 	fmt.Fprintln(w, "  init service [--addr addr] [--data-dir dir] [--token token]")

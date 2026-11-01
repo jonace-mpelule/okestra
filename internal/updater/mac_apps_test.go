@@ -24,14 +24,14 @@ func macArchive(t *testing.T, files map[string]string) []byte {
 	_ = gz.Close()
 	return b.Bytes()
 }
-func TestMacBundleExtractionPreservesDeviceResources(t *testing.T) {
-	files := map[string]string{"Okestra Menu.app/Contents/Info.plist": "plist", "Okestra Menu.app/Contents/MacOS/OkestraMenu": "binary", "Okestra Menu.app/Contents/Helpers/okestra": "cli", "Okestra Device.app/Contents/Info.plist": "plist", "Okestra Device.app/Contents/MacOS/OkestraDevice": "binary", "Okestra Device.app/Contents/Helpers/okestra": "cli", "Okestra Device.app/Contents/Resources/scrcpy-server-3.3.4.jar": "jar", "Okestra Device.app/Contents/_CodeSignature/CodeResources": "signature"}
+func TestMacBundleExtractionPreservesMenuResources(t *testing.T) {
+	files := map[string]string{"Okestra Menu.app/Contents/Info.plist": "plist", "Okestra Menu.app/Contents/MacOS/OkestraMenu": "binary", "Okestra Menu.app/Contents/Helpers/okestra": "cli"}
 	dir := t.TempDir()
 	names, e := extractMacApps(macArchive(t, files), dir)
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(names) != 2 {
+	if len(names) != 1 {
 		t.Fatal(names)
 	}
 	for p, want := range files {
@@ -40,15 +40,15 @@ func TestMacBundleExtractionPreservesDeviceResources(t *testing.T) {
 			t.Fatalf("%s: %q %v", p, b, e)
 		}
 	}
-	for _, bad := range []string{"Okestra Device.app/Contents/../../escape", "Okestra Menu.app/Contents/a/../escape", "Okestra Device.app/Contents/a\\escape"} {
+	for _, bad := range []string{"Okestra Menu.app/Contents/../../escape", "Okestra Menu.app/Contents/a/../escape", "Okestra Menu.app/Contents/a\\escape"} {
 		files[bad] = "unsafe"
 		if _, e := extractMacApps(macArchive(t, files), t.TempDir()); e == nil {
 			t.Fatal("accepted", bad)
 		}
 		delete(files, bad)
 	}
-	delete(files, "Okestra Device.app/Contents/Helpers/okestra")
+	delete(files, "Okestra Menu.app/Contents/MacOS/OkestraMenu")
 	if _, e := extractMacApps(macArchive(t, files), t.TempDir()); e == nil {
-		t.Fatal("accepted incomplete device bundle")
+		t.Fatal("accepted incomplete menu bundle")
 	}
 }

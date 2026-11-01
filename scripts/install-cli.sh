@@ -10,10 +10,9 @@ fi
 BINARY=$DEFAULT_BINARY
 DESTINATION=${OKESTRA_INSTALL_BIN:-/usr/local/bin/okestra}
 MODE=menu
-ANDROID=no
 
 usage() {
-  printf '%s\n' 'Usage: install-cli.sh [--android] [--yes | --install-only | --connect-only] [path-to-okestra]'
+  printf '%s\n' 'Usage: install-cli.sh [--yes | --install-only | --connect-only] [path-to-okestra]'
   printf '%s\n' 'Guided menu opens automatically in a terminal.'
   printf '%s\n' 'For unattended pairing, set OKESTRA_SETUP_NAME, OKESTRA_SETUP_URL and OKESTRA_TOKEN.'
 }
@@ -21,7 +20,6 @@ usage() {
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --yes) MODE=yes ;;
-    --android) ANDROID=yes ;;
     --install-only) MODE=install-only ;;
     --connect-only) MODE=connect-only ;;
     --help|-h) usage; exit 0 ;;
@@ -55,7 +53,7 @@ install_cli() {
   printf '\nInstalled %s\n' "$DESTINATION"
   "$DESTINATION" version
   if [ "$(uname -s)" = Darwin ]; then
-    for app in 'Okestra Menu.app' 'Okestra Device.app'; do
+    for app in 'Okestra Menu.app'; do
       source_app="$SCRIPT_DIR/$app"
       if [ ! -d "$source_app" ] && [ -d "$PROJECT_DIR/dist/$app" ]; then source_app="$PROJECT_DIR/dist/$app"; fi
       if [ -d "$source_app" ]; then
@@ -73,7 +71,6 @@ install_cli() {
         printf 'Installed %s (quit and reopen it after an update)\n' "$HOME/Applications/$app"
       fi
     done
-    if [ "$ANDROID" = yes ]; then "$SCRIPT_DIR/setup-android-mac.sh"; fi
   fi
 }
 

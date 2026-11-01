@@ -10,11 +10,6 @@ private struct ProjectFile: Decodable {
     }
 }
 
-private struct AndroidStatus: Decodable {
-    let enabled: Bool
-    let device: String
-    let local_serial: String
-}
 
 struct ServiceRow: Identifiable {
     let name: String
@@ -39,10 +34,6 @@ final class Controller: ObservableObject {
     @Published var outputTitle = "Activity"
     @Published var busy = false
     @Published var refreshing = false
-    @Published var hasAndroid = false
-    @Published var androidStatus = "Checking Android…"
-    @Published var androidDevice = "stopped"
-    @Published var androidSerial = ""
     @AppStorage("projectFolder") var projectFolder = ""
 
     private var executable: String? {
@@ -80,18 +71,6 @@ final class Controller: ObservableObject {
         let folder = projectFolder
         let project = manifest
         projectName = project?.name ?? ""
-        hasAndroid = true
-        if hasAndroid {
-            run(["android", "status", "--json"]) { [weak self] text, code in
-                guard let self, self.projectFolder == folder else { return }
-                guard code == 0, let data = text.data(using: .utf8), let result = try? JSONDecoder().decode(AndroidStatus.self, from: data) else {
-                    self.androidStatus = "Android unavailable · run Check setup"; return
-                }
-                self.androidDevice = result.device
-                self.androidSerial = result.local_serial
-                self.androidStatus = result.enabled ? "Device: \(result.device)" : "Enable Android on the server"
-            }
-        }
         hasPorts = project?.services?.values.contains { !($0.ports ?? []).isEmpty } ?? false
         if let project {
             services = (project.services ?? [:]).keys.sorted().map { ServiceRow(name: $0, status: "Checking…", image: "") }
@@ -188,9 +167,7 @@ final class Controller: ObservableObject {
             var environment = ProcessInfo.processInfo.environment
             environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (environment["PATH"] ?? "/usr/bin:/bin")
             process.environment = environment
-            if arguments.first == "android" {
-                process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
-            } else if !folder.isEmpty { process.currentDirectoryURL = URL(fileURLWithPath: folder) }
+            if !folder.isEmpty { process.currentDirectoryURL = URL(fileURLWithPath: folder) }
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = pipe
@@ -226,7 +203,6 @@ struct OkestraMenu: View {
                     serverCard
                     projectCard
                     servicesCard
-                    if controller.hasAndroid { androidCard }
                     if !controller.output.isEmpty { activityCard }
                 }
                 .padding(16)
@@ -370,24 +346,7 @@ struct OkestraMenu: View {
         .cardStyle(card, border: border)
     }
 
-    private var androidCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Remote Android", systemImage: "iphone").font(.subheadline.weight(.semibold))
-            Text(controller.androidStatus).font(.caption).foregroundStyle(.secondary)
-            if !controller.androidSerial.isEmpty {
-                Text("Local ADB: \(controller.androidSerial)").font(.caption2).textSelection(.enabled)
-            }
-            HStack {
-                Button("Open devices") { controller.action(["android", "view"], title: "Okestra Device") }
-                Menu("More") {
-                    Button("Connect local ADB") { controller.action(["android", "connect"], title: "Connect Android") }
-                    Button("Disconnect local ADB") { controller.action(["android", "disconnect"], title: "Disconnect Android") }
-                    Button("Device logs") { controller.action(["android", "device-logs"], title: "Android logs") }
-                    Button("Check setup") { controller.action(["android", "doctor"], title: "Android diagnostics") }
-                }
-            }
-        }.disabled(controller.busy).cardStyle(card, border: border)
-    }
+
 
     private var activityCard: some View {
         VStack(alignment: .leading, spacing: 9) {

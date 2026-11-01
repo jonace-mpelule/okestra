@@ -21,13 +21,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/jonace-mpelule/okestra/internal/android"
 	"github.com/jonace-mpelule/okestra/internal/protocol"
 	"github.com/jonace-mpelule/okestra/internal/version"
 )
 
 type Server struct {
-	android   *android.Manager
 	addr      string
 	token     string
 	workDir   string
@@ -55,7 +53,6 @@ type tunnelSession struct {
 
 func NewServer(addr, token, workDir string, docker Runtime) *Server {
 	return &Server{
-		android: android.New(workDir),
 		addr:    addr,
 		token:   token,
 		workDir: workDir,
@@ -78,7 +75,6 @@ func NewServer(addr, token, workDir string, docker Runtime) *Server {
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
-	defer s.android.Close()
 	if err := os.MkdirAll(s.workDir, 0o755); err != nil {
 		return err
 	}
@@ -111,7 +107,6 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/v1/android/", s.auth(s.handleAndroid))
 	mux.HandleFunc("/readyz", s.handleReady)
 	mux.HandleFunc("/v1/status", s.auth(s.handleStatus))
 	mux.HandleFunc("/v1/build", s.auth(s.handleBuild))
