@@ -157,6 +157,7 @@ func TestAndroidADBBridgeAndControlShutdown(t *testing.T) {
 }
 
 func TestExpoRunSendsPrivateEnvironmentAndFramework(t *testing.T) {
+	t.Setenv("OKESTRA_ANDROID_DEVELOPMENT_ENABLED", "1")
 	dir := t.TempDir()
 	pkg := `{"dependencies":{"expo":"54","expo-dev-client":"6","react-native":"0.81"}}`
 	for path, value := range map[string]string{"package.json": pkg, "package-lock.json": "{}", ".env": "EXPO_PUBLIC_API_URL=https://example.test\nNPM_TOKEN=private-test-token\n"} {
@@ -241,5 +242,62 @@ func TestExpoNativeChangesAndFrameworkValidation(t *testing.T) {
 		if e := (&AndroidProject{Path: ".", Framework: framework}).validate(); e != nil {
 			t.Fatal(e)
 		}
+	}
+}
+
+func TestDeviceCommandsDoNotRequireProject(t *testing.T) {
+	t.Setenv("OKESTRA_ANDROID_DEVELOPMENT_ENABLED", "")
+	requested := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret-device-token" {
+			t.Error("missing authentication")
+		}
+		requested = append(requested, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/android/profiles":
+			io.WriteString(w, `[{"id":"saved","name":"Pixel","avd":"pixel_7","hardware":"pixel_7","cores":2,"memory_mb":2048,"width":1080,"height":2400}]`)
+		case "/v1/android/device/start":
+			var body struct {
+				Profile string `json:"profile"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			if body.Profile != "saved" {
+				t.Error("wrong selected profile", body)
+			}
+			io.WriteString(w, `{"ok":true}`)
+		case "/v1/android/device/stop":
+			io.WriteString(w, `{"ok":true}`)
+		case "/v1/android/device/logs":
+			io.WriteString(w, `{"output":"device logs"}`)
+		default:
+			t.Error("unexpected endpoint", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	cfg := &Config{ActiveAgent: "test", Agents: map[string]protocol.AgentProfile{"test": {Name: "test", URL: server.URL, Token: "secret-device-token"}}}
+	// A nonexistent manifest guarantees these actions cannot accidentally load one.
+	for _, action := range [][]string{{"profiles", "--json"}, {"start", "--device", "saved"}, {"device-stop"}, {"device-logs"}} {
+		var out, errOut bytes.Buffer
+		args := append(action, "-f", filepath.Join(t.TempDir(), "missing.json"))
+		if code := runAndroid(context.Background(), cfg, args, &out, &errOut); code != 0 {
+			t.Fatalf("%v: %s", action, errOut.String())
+		}
+	}
+	count := len(requested)
+	for _, action := range []string{"run", "sync", "reload", "restart", "watch", "init", "dev-menu"} {
+		var out, errOut bytes.Buffer
+		if code := runAndroid(context.Background(), cfg, []string{action}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "archived") {
+			t.Fatalf("%s: %d %s", action, code, errOut.String())
+		}
+	}
+	if len(requested) != count {
+		t.Fatal("archived commands contacted server")
+	}
+	var out, errOut bytes.Buffer
+	if code := runAndroid(context.Background(), cfg, []string{"servers"}, &out, &errOut); code != 0 {
+		t.Fatal(errOut.String())
+	}
+	if strings.Contains(out.String(), "secret-device-token") || strings.Contains(out.String(), server.URL) {
+		t.Fatal("server inventory exposed credentials or URLs")
 	}
 }

@@ -129,19 +129,21 @@ def install():
         raise RuntimeError('Run this helper as the okestra service user')
     with tempfile.TemporaryDirectory(prefix='android-install-',dir=ROOT) as staging:
         stage=Path(staging)
-        install_node(stage)
+        if '--sdk-only' not in sys.argv:
+            install_node(stage)
         if '--node-only' in sys.argv: return
-        flutter=ROOT/'flutter'
-        if not (flutter/'bin/flutter').is_file():
-            if flutter.exists(): raise RuntimeError('Incomplete Flutter directory exists; move it aside before retrying')
-            fetch(FLUTTER_RELEASES_URL,stage/'flutter.json')
-            url,digest=stable_flutter(json.loads((stage/'flutter.json').read_text()))
-            print('Downloading verified Flutter stable…',flush=True)
-            fetch(url,stage/'flutter.tar.xz');verify(stage/'flutter.tar.xz','sha256',digest)
-            if not hasattr(tarfile,'data_filter'): raise RuntimeError('Python with tarfile.data_filter support is required (Ubuntu 24.04 or later)')
-            with tarfile.open(stage/'flutter.tar.xz') as data: data.extractall(stage,filter='data')
-            if not (stage/'flutter/bin/flutter').is_file(): raise RuntimeError('Invalid Flutter archive')
-            (stage/'flutter').rename(flutter)
+        if '--sdk-only' not in sys.argv:
+            flutter=ROOT/'flutter'
+            if not (flutter/'bin/flutter').is_file():
+                if flutter.exists(): raise RuntimeError('Incomplete Flutter directory exists; move it aside before retrying')
+                fetch(FLUTTER_RELEASES_URL,stage/'flutter.json')
+                url,digest=stable_flutter(json.loads((stage/'flutter.json').read_text()))
+                print('Downloading verified Flutter stable…',flush=True)
+                fetch(url,stage/'flutter.tar.xz');verify(stage/'flutter.tar.xz','sha256',digest)
+                if not hasattr(tarfile,'data_filter'): raise RuntimeError('Python with tarfile.data_filter support is required (Ubuntu 24.04 or later)')
+                with tarfile.open(stage/'flutter.tar.xz') as data: data.extractall(stage,filter='data')
+                if not (stage/'flutter/bin/flutter').is_file(): raise RuntimeError('Invalid Flutter archive')
+                (stage/'flutter').rename(flutter)
         sdk=ROOT/'android-sdk'
         latest=sdk/'cmdline-tools/latest'
         if not (latest/'bin/sdkmanager').is_file():

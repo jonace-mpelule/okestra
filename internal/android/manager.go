@@ -25,11 +25,15 @@ import (
 var Name = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,47}$`)
 
 type Status struct {
-	Enabled  bool              `json:"enabled"`
-	Device   string            `json:"device"`
-	AVDs     []string          `json:"avds"`
-	Checks   map[string]string `json:"checks"`
-	Sessions map[string]string `json:"sessions"`
+	Profiles           []DeviceProfile   `json:"profiles"`
+	ActiveProfile      string            `json:"active_profile"`
+	ActiveAVD          string            `json:"active_avd"`
+	DevelopmentEnabled bool              `json:"development_enabled"`
+	Enabled            bool              `json:"enabled"`
+	Device             string            `json:"device"`
+	AVDs               []string          `json:"avds"`
+	Checks             map[string]string `json:"checks"`
+	Sessions           map[string]string `json:"sessions"`
 }
 type process struct {
 	cmd          *exec.Cmd
@@ -42,18 +46,42 @@ type process struct {
 	done         chan struct{}
 }
 type Manager struct {
-	mu       sync.Mutex
-	root     string
-	enabled  bool
-	device   *process
-	sessions map[string]*process
+	profilesMu      sync.Mutex
+	deviceAVD       string
+	deviceProfileID string
+	mu              sync.Mutex
+	root            string
+	enabled         bool
+	device          *process
+	sessions        map[string]*process
 }
 
 func New(root string) *Manager {
 	return &Manager{root: filepath.Join(root, "android"), enabled: os.Getenv("OKESTRA_ANDROID_ENABLED") == "1", sessions: map[string]*process{}}
 }
+
+// Graphics acceleration is distinct from KVM CPU acceleration. Keep the compatible
+// software default unless the operator explicitly opts into a supported host GPU.
+func graphicsMode() (string, error) {
+	mode := strings.TrimSpace(os.Getenv("OKESTRA_ANDROID_GPU"))
+	if mode == "" {
+		mode = "swiftshader"
+	}
+	switch mode {
+	case "swiftshader", "auto", "host", "software", "lavapipe", "swangle":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("unsupported OKESTRA_ANDROID_GPU %q; use swiftshader, auto, host, software, lavapipe or swangle", mode)
+	}
+}
 func (m *Manager) Enabled() bool { return m.enabled }
+func DevelopmentEnabled() bool   { return os.Getenv("OKESTRA_ANDROID_DEVELOPMENT_ENABLED") == "1" }
 func tool(name string) string {
+	if name == "avdmanager" {
+		if sdk := os.Getenv("ANDROID_HOME"); sdk != "" {
+			return filepath.Join(sdk, "cmdline-tools/latest/bin/avdmanager")
+		}
+	}
 	if v := os.Getenv("OKESTRA_" + strings.ToUpper(name) + "_BIN"); v != "" {
 		return v
 	}
@@ -92,11 +120,15 @@ func output(ctx context.Context, name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(b)), e
 }
 func (m *Manager) Status(ctx context.Context) Status {
-	s := Status{Enabled: m.enabled, Device: "stopped", Sessions: map[string]string{}, Checks: map[string]string{}, AVDs: []string{}}
+	s := Status{Profiles: []DeviceProfile{}, DevelopmentEnabled: DevelopmentEnabled(), Enabled: m.enabled, Device: "stopped", Sessions: map[string]string{}, Checks: map[string]string{}, AVDs: []string{}}
 	if !m.enabled {
 		return s
 	}
-	for _, name := range []string{"flutter", "adb", "emulator", "java", "node", "npm"} {
+	tools := []string{"adb", "emulator", "java"}
+	if DevelopmentEnabled() {
+		tools = append(tools, "flutter", "node", "npm")
+	}
+	for _, name := range tools {
 		path, e := exec.LookPath(tool(name))
 		if e != nil {
 			s.Checks[name] = "missing: " + e.Error()
@@ -110,6 +142,11 @@ func (m *Manager) Status(ctx context.Context) Status {
 		f.Close()
 		s.Checks["kvm"] = "ready"
 	}
+	if mode, err := graphicsMode(); err != nil {
+		s.Checks["graphics"] = err.Error()
+	} else {
+		s.Checks["graphics"] = mode
+	}
 	if text, e := output(ctx, "emulator", "-list-avds"); e == nil {
 		for _, v := range strings.Split(text, "\n") {
 			if strings.TrimSpace(v) != "" {
@@ -117,7 +154,14 @@ func (m *Manager) Status(ctx context.Context) Status {
 			}
 		}
 	}
+	if profiles, err := m.profilesForAVDs(s.AVDs); err == nil {
+		s.Profiles = profiles
+	} else {
+		s.Checks["profiles"] = err.Error()
+	}
 	m.mu.Lock()
+	s.ActiveAVD = m.deviceAVD
+	s.ActiveProfile = m.deviceProfileID
 	if m.device != nil {
 		s.Device = m.device.state
 	}
@@ -211,8 +255,18 @@ func active(p *process) bool {
 	return p != nil && (p.cmd != nil || p.cancel != nil) && p.state != "failed" && p.state != "stopped"
 }
 func (m *Manager) StartDevice(ctx context.Context, avd string) error {
+	return m.startDevice(ctx, avd, 0, 0, profileID(avd))
+}
+func (m *Manager) startDevice(ctx context.Context, avd string, cores, memory int, id string) error {
+	if !validAVD(avd) {
+		return errors.New("invalid AVD name")
+	}
 	if !m.enabled {
 		return errors.New("enable Android with OKESTRA_ANDROID_ENABLED=1")
+	}
+	mode, err := graphicsMode()
+	if err != nil {
+		return err
 	}
 	available, e := output(ctx, "emulator", "-list-avds")
 	if e != nil {
@@ -227,10 +281,29 @@ func (m *Manager) StartDevice(ctx context.Context, avd string) error {
 	if !found {
 		return errors.New("choose an installed AVD from android status")
 	}
+	// Serialize provisioning, profile edits and device launch. Reload resource
+	// settings here so an edit between profile lookup and launch is respected.
+	m.profilesMu.Lock()
+	defer m.profilesMu.Unlock()
+	if cores > 0 {
+		saved, err := m.readProfiles()
+		if err != nil {
+			return err
+		}
+		for _, p := range saved {
+			if p.ID == id {
+				cores, memory = p.Cores, p.MemoryMB
+				break
+			}
+		}
+	}
 	// Never take over an emulator owned by another application.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if active(m.device) {
+		if m.deviceAVD != avd || (m.deviceProfileID != "" && m.deviceProfileID != id) {
+			return errors.New("stop the current emulator before starting another device profile")
+		}
 		return nil
 	}
 	for _, port := range []string{"5554", "5555"} {
@@ -244,7 +317,16 @@ func (m *Manager) StartDevice(ctx context.Context, avd string) error {
 		return fmt.Errorf("start ADB: %s: %w", text, e)
 	}
 	m.device = &process{}
-	return m.launch(m.device, "", "emulator", "-avd", avd, "-port", "5554", "-no-window", "-skip-adb-auth", "-no-audio", "-no-boot-anim", "-gpu", "swiftshader", "-no-snapshot-save")
+	args := []string{"-avd", avd, "-port", "5554", "-no-window", "-skip-adb-auth", "-no-audio", "-no-boot-anim", "-gpu", mode, "-no-snapshot-save"}
+	if cores > 0 {
+		args = append(args, "-cores", fmt.Sprint(cores), "-memory", fmt.Sprint(memory))
+	}
+	if err := m.launch(m.device, "", "emulator", args...); err != nil {
+		return err
+	}
+	m.deviceAVD = avd
+	m.deviceProfileID = id
+	return nil
 }
 func (m *Manager) Stop(name string) error {
 	m.mu.Lock()

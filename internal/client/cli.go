@@ -818,7 +818,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: okestra <command> [options]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Commands:")
-	fmt.Fprintln(w, "  android (Flutter sessions, emulator, local ADB and Mac viewer)")
+	fmt.Fprintln(w, "  android (device profiles, remote emulator, local ADB and Mac viewer)")
 	fmt.Fprintln(w, "  version")
 	fmt.Fprintln(w, "  upgrade [--check]")
 	fmt.Fprintln(w, "  init service [--addr addr] [--data-dir dir] [--token token]")

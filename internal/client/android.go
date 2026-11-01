@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -140,10 +141,22 @@ func androidProject(file string) (Project, string, error) {
 }
 func runAndroid(ctx context.Context, cfg *Config, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stdout, "Usage: okestra android <init|doctor|status|start|device-stop|device-logs|connect|disconnect|view|sync|run|reload|restart|stop|logs|watch|unwatch|watch-logs|dev-menu> [-f okestra.json] [--avd NAME] [--framework flutter|expo] [--json]")
+		fmt.Fprintln(stdout, "Usage: okestra android <servers|profiles|profile-create|profile-update|doctor|status|start|device-stop|device-logs|connect|disconnect|view> [--device ID] [--profile SERVER] [--avd NAME] [--name NAME] [--hardware pixel_7|pixel_9] [--cores 1-8] [--memory 1536-8192] [--json]")
 		return 0
 	}
 	action := args[0]
+	if action == "servers" {
+		names := make([]string, 0, len(cfg.Agents))
+		for name := range cfg.Agents {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		_ = json.NewEncoder(stdout).Encode(struct {
+			Names  []string `json:"names"`
+			Active string   `json:"active"`
+		}{names, cfg.ActiveAgent})
+		return 0
+	}
 	if action == "active-profile" {
 		if _, e := cfg.ActiveProfile(); e != nil {
 			fmt.Fprintln(stderr, e)
@@ -164,6 +177,11 @@ func runAndroid(ctx context.Context, cfg *Config, args []string, stdout, stderr 
 	fs := flag.NewFlagSet("android "+action, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	file := fs.String("f", "okestra.json", "project manifest")
+	device := fs.String("device", "", "saved device profile ID")
+	name := fs.String("name", "", "device profile display name")
+	hardware := fs.String("hardware", "pixel_7", "pixel_7 or pixel_9")
+	cores := fs.Int("cores", 2, "server CPU cores (1–8)")
+	memory := fs.Int("memory", 2048, "server RAM in MiB")
 	avd := fs.String("avd", "", "installed server AVD")
 	framework := fs.String("framework", "flutter", "flutter or expo (development builds only)")
 	asJSON := fs.Bool("json", false, "structured output")
@@ -172,6 +190,15 @@ func runAndroid(ctx context.Context, cfg *Config, args []string, stdout, stderr 
 		return 1
 	}
 	fail := func(e error) int { fmt.Fprintln(stderr, "Android:", e); return 1 }
+	if *device != "" && *avd != "" {
+		return fail(errors.New("choose --device or --avd, not both"))
+	}
+	switch action {
+	case "init", "sync", "run", "reload", "restart", "watch", "__watch", "dev-menu":
+		if os.Getenv("OKESTRA_ANDROID_DEVELOPMENT_ENABLED") != "1" {
+			return fail(errors.New("remote Flutter/Expo workflows are archived; use your local tools and the remote ADB device (legacy opt-in: OKESTRA_ANDROID_DEVELOPMENT_ENABLED=1 on both client and server)"))
+		}
+	}
 	if action == "init" {
 		if *avd == "" {
 			return fail(errors.New("specify --avd with an installed server device name"))
@@ -214,9 +241,68 @@ func runAndroid(ctx context.Context, cfg *Config, args []string, stdout, stderr 
 	if !ok {
 		return 1
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 	switch action {
+	case "profiles":
+		var profiles []androidruntime.DeviceProfile
+		if e := api.getJSON(reqCtx, "/v1/android/profiles", &profiles); e != nil {
+			return fail(e)
+		}
+		if *asJSON {
+			_ = json.NewEncoder(stdout).Encode(profiles)
+		} else {
+			for _, p := range profiles {
+				fmt.Fprintf(stdout, "%s: %s · %s · %d cores · %d MiB RAM\n", p.ID, p.Name, p.AVD, p.Cores, p.MemoryMB)
+			}
+		}
+		return 0
+	case "profile-create", "profile-update":
+		payload := androidruntime.ProfileRequest{Name: *name, Hardware: *hardware, Cores: *cores, MemoryMB: *memory}
+		endpoint := "/v1/android/profiles"
+		method := http.MethodPost
+		if action == "profile-update" {
+			if *device == "" {
+				return fail(errors.New("specify --device ID"))
+			}
+			endpoint += "/" + url.PathEscape(*device)
+			method = http.MethodPut
+		}
+		b, _ := json.Marshal(payload)
+		request, e := http.NewRequestWithContext(reqCtx, method, api.baseURL+endpoint, bytes.NewReader(b))
+		if e != nil {
+			return fail(e)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, e := api.do(request)
+		if e != nil {
+			return fail(e)
+		}
+		defer response.Body.Close()
+		if response.StatusCode >= 300 {
+			return fail(decodeAPIError(response))
+		}
+		var result androidruntime.DeviceProfile
+		if e = json.NewDecoder(response.Body).Decode(&result); e != nil {
+			return fail(e)
+		}
+		_ = json.NewEncoder(stdout).Encode(result)
+		return 0
+	case "device-stop":
+		if e := api.androidAction(reqCtx, "device", "stop", nil); e != nil {
+			return fail(e)
+		}
+		fmt.Fprintln(stdout, "Emulator stopped; its data is preserved.")
+		return 0
+	case "device-logs":
+		var result struct {
+			Output string `json:"output"`
+		}
+		if e := api.getJSON(reqCtx, "/v1/android/device/logs", &result); e != nil {
+			return fail(e)
+		}
+		fmt.Fprintln(stdout, result.Output)
+		return 0
 	case "status", "doctor":
 		var s androidruntime.Status
 		if e := api.getJSON(reqCtx, "/v1/android/status", &s); e != nil {
@@ -231,7 +317,7 @@ func runAndroid(ctx context.Context, cfg *Config, args []string, stdout, stderr 
 			return 0
 		}
 		fmt.Fprintf(stdout, "Android enabled: %t\nDevice: %s\nAvailable AVDs: %s\n", s.Enabled, s.Device, strings.Join(s.AVDs, ", "))
-		for _, k := range []string{"flutter", "adb", "emulator", "java", "node", "npm", "kvm"} {
+		for _, k := range []string{"adb", "emulator", "java", "kvm", "graphics"} {
 			fmt.Fprintf(stdout, "%s: %s\n", k, s.Checks[k])
 		}
 		for n, v := range s.Sessions {
@@ -263,16 +349,14 @@ func runAndroid(ctx context.Context, cfg *Config, args []string, stdout, stderr 
 		if runtime.GOOS != "darwin" {
 			return fail(errors.New("Okestra Device requires macOS; use view-scrcpy on Linux"))
 		}
-		p, _, e := androidProject(*file)
-		if e != nil {
-			return fail(e)
-		}
-		_ = p
 		app := findDeviceApp()
 		if app == "" {
 			return fail(errors.New("install Okestra Device.app beside Okestra Menu.app, or build it with make device"))
 		}
-		params := url.Values{"project": []string{filepath.Dir(mustAbs(*file))}, "profile": []string{cfg.ActiveAgent}}
+		params := url.Values{"server": []string{cfg.ActiveAgent}}
+		if *device != "" {
+			params.Set("device", *device)
+		}
 		cmd := exec.CommandContext(reqCtx, "/usr/bin/open", "-a", app, "okestra-device://open?"+params.Encode())
 		if b, e := cmd.CombinedOutput(); e != nil {
 			return fail(fmt.Errorf("open device app: %s: %w", b, e))
@@ -308,18 +392,27 @@ func runAndroid(ctx context.Context, cfg *Config, args []string, stdout, stderr 
 		fmt.Fprintln(stdout, "Opened device viewer. Output:", logFile.Name())
 		return 0
 	case "start":
-		if *avd == "" {
-			p, _, e := androidProject(*file)
-			if e != nil {
+		payload := map[string]string{}
+		if *device != "" {
+			payload["profile"] = *device
+		} else if *avd != "" {
+			payload["avd"] = *avd
+		} else {
+			var profiles []androidruntime.DeviceProfile
+			if e := api.getJSON(reqCtx, "/v1/android/profiles", &profiles); e != nil {
 				return fail(e)
 			}
-			*avd = p.Android.AVD
+			if len(profiles) != 1 {
+				return fail(errors.New("choose a device with --device ID (list with okestra android profiles)"))
+			}
+			payload["profile"] = profiles[0].ID
 		}
-		if e := api.androidAction(reqCtx, "device", "start", map[string]string{"avd": *avd}); e != nil {
+		if e := api.androidAction(reqCtx, "device", "start", payload); e != nil {
 			return fail(e)
 		}
-		fmt.Fprintln(stdout, "Emulator starting. Check android status until ready, then open the viewer.")
+		fmt.Fprintln(stdout, "Emulator starting. Check android status until ready, then connect the viewer.")
 		return 0
+
 	}
 	p, root, e := androidProject(*file)
 	if e != nil {
@@ -440,7 +533,11 @@ func androidDetach(ctx context.Context, cfg *Config, api *API, kind, file string
 		return 1
 	}
 	defer logFile.Close()
-	cmd := exec.Command(exe, "android", action, "-f", mustAbs(file), "--profile", cfg.ActiveAgent)
+	arguments := []string{"android", action, "--profile", cfg.ActiveAgent}
+	if action == "__watch" {
+		arguments = append(arguments, "-f", mustAbs(file))
+	}
+	cmd := exec.Command(exe, arguments...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

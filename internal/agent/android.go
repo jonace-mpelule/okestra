@@ -22,6 +22,42 @@ func (s *Server) handleAndroid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 503, "android_disabled", "set OKESTRA_ANDROID_ENABLED=1 on the server")
 		return
 	}
+	if path == "profiles" || strings.HasPrefix(path, "profiles/") {
+		if path == "profiles" && r.Method == http.MethodGet {
+			profiles, err := s.android.Profiles(r.Context())
+			if err != nil {
+				writeError(w, 400, "profiles_error", err.Error())
+				return
+			}
+			writeJSON(w, 200, profiles)
+			return
+		}
+		var req androidruntime.ProfileRequest
+		if r.Method != http.MethodPost && r.Method != http.MethodPut {
+			writeError(w, 405, "method_not_allowed", "GET, POST or PUT required")
+			return
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&req); err != nil {
+			writeError(w, 400, "invalid_request", err.Error())
+			return
+		}
+		var p androidruntime.DeviceProfile
+		var err error
+		if path == "profiles" && r.Method == http.MethodPost {
+			p, err = s.android.CreateProfile(r.Context(), req)
+		} else if strings.HasPrefix(path, "profiles/") && r.Method == http.MethodPut {
+			p, err = s.android.SaveProfile(r.Context(), strings.TrimPrefix(path, "profiles/"), req)
+		} else {
+			writeError(w, 405, "method_not_allowed", "unsupported profile operation")
+			return
+		}
+		if err != nil {
+			writeError(w, 400, "profiles_error", err.Error())
+			return
+		}
+		writeJSON(w, 200, p)
+		return
+	}
 	if path == "adb/ws" && r.Method == http.MethodGet {
 		if !s.android.DeviceActive() {
 			writeError(w, 409, "device_stopped", "start the managed device first")
@@ -53,6 +89,10 @@ func (s *Server) handleAndroid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, action := parts[0], parts[1]
+	if name != "device" && action != "stop" && action != "logs" && !androidruntime.DevelopmentEnabled() {
+		writeError(w, 410, "development_archived", "Remote Flutter and Expo workflows are archived; use local development tools with the remote ADB device.")
+		return
+	}
 	if action == "logs" && r.Method == http.MethodGet {
 		writeJSON(w, 200, map[string]string{"output": s.android.Logs(name)})
 		return
@@ -67,6 +107,7 @@ func (s *Server) handleAndroid(w http.ResponseWriter, r *http.Request) {
 		e = s.android.SyncProject(name, androidFramework(r.URL.Query().Get("framework")), http.MaxBytesReader(w, r.Body, 256*1024*1024))
 	case "start":
 		var req struct {
+			Profile   string                     `json:"profile"`
 			AVD       string                     `json:"avd"`
 			Target    string                     `json:"target"`
 			Framework string                     `json:"framework"`
@@ -74,7 +115,11 @@ func (s *Server) handleAndroid(w http.ResponseWriter, r *http.Request) {
 		}
 		if e = json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536)).Decode(&req); e == nil {
 			if name == "device" {
-				e = s.android.StartDevice(r.Context(), req.AVD)
+				if req.Profile != "" {
+					e = s.android.StartProfile(r.Context(), req.Profile)
+				} else {
+					e = s.android.StartDevice(r.Context(), req.AVD)
+				}
 			} else {
 				e = s.android.RunProject(name, req.Target, req.Framework, req.Expo)
 			}

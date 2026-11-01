@@ -72,6 +72,13 @@ final class DecoderTests: XCTestCase {
     let sample = try XCTUnwrap(decoder.consume(annex(picture), config: false, keyframe: true))
     let format = try XCTUnwrap(CMSampleBufferGetFormatDescription(sample))
     XCTAssertEqual(CMVideoFormatDescriptionGetDimensions(format).width, 16)
+    let realtime = RealtimeVideoDecoder()
+    let rendered = try XCTUnwrap(realtime.decode(sample))
+    let pixels = try XCTUnwrap(CMSampleBufferGetImageBuffer(rendered))
+    XCTAssertEqual(CVPixelBufferGetWidth(pixels), 16)
+    XCTAssertEqual(CVPixelBufferGetHeight(pixels), 16)
+    XCTAssertEqual(CMSampleBufferGetNumSamples(rendered), 1)
+    XCTAssertNotNil(try realtime.decode(sample))
     var session: VTDecompressionSession?
     let status = VTDecompressionSessionCreate(
       allocator: kCFAllocatorDefault, formatDescription: format, decoderSpecification: nil,

@@ -4,12 +4,24 @@ from pathlib import Path
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location('android_tools',Path(__file__).with_name('android-tools.py'))
 tools=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tools)
 
 class ToolSetupTests(unittest.TestCase):
+    def test_device_only_setup_skips_flutter_and_node(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            sdkmanager=root/'android-sdk/cmdline-tools/latest/bin/sdkmanager'
+            sdkmanager.parent.mkdir(parents=True)
+            sdkmanager.write_text('installed')
+            with patch.object(tools,'ROOT',root), patch.object(tools.os,'geteuid',return_value=1000), patch.object(tools.sys,'argv',['android-tools.py','--sdk-only']), patch.object(tools,'install_node') as node, patch.object(tools,'fetch') as download:
+                tools.install()
+            node.assert_not_called()
+            download.assert_not_called()
+            self.assertFalse((root/'flutter').exists())
     def test_official_flutter_manifest_endpoint(self):
         self.assertEqual(tools.FLUTTER_RELEASES_URL,'https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json')
     def test_node_lts_selection(self):

@@ -26,9 +26,11 @@ public struct VideoPacket {
   public let config: Bool
   public let keyframe: Bool
   public let length: Int
+  public let timestampMicroseconds: UInt64
   public init(header: Data) throws {
     guard header.count == 12 else { throw DeviceError.message("Invalid frame header") }
     let flags = try header.unsigned(at: 0, bytes: 8)
+    timestampMicroseconds = flags & ((1 << 62) - 1)
     config = flags & (1 << 63) != 0
     keyframe = flags & (1 << 62) != 0
     length = Int(try header.unsigned(at: 8, bytes: 4))

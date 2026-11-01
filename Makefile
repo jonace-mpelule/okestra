@@ -28,16 +28,18 @@ dist:
 	GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/okestra-linux-arm64 ./cmd/okestra
 	GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/okestra-service-linux-amd64 ./cmd/okestra-service
 	GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/okestra-service-linux-arm64 ./cmd/okestra-service
-	mkdir -p dist/package-cli/docs dist/package-service/docs
+	mkdir -p dist/package-cli/docs/archive dist/package-service/docs/archive
 	cp scripts/install-cli.sh dist/package-cli/install-cli.sh
-	sed 's|](expo.md)|](docs/expo.md)|g; s|](android.md)|](docs/android.md)|g' docs/android.md > dist/package-cli/ANDROID.md
-	sed 's|](expo.md)|](docs/expo.md)|g; s|](android.md)|](docs/android.md)|g' docs/expo.md > dist/package-cli/EXPO.md
+	sed 's|](expo.md)|](docs/expo.md)|g; s|](android.md)|](docs/android.md)|g; s|](archive/|](docs/archive/|g' docs/android.md > dist/package-cli/ANDROID.md
+	sed 's|](expo.md)|](docs/expo.md)|g; s|](android.md)|](docs/android.md)|g; s|](archive/|](docs/archive/|g' docs/expo.md > dist/package-cli/EXPO.md
 	cp docs/android.md docs/expo.md dist/package-cli/docs/
+	cp docs/archive/*.md dist/package-cli/docs/archive/
 	cp scripts/setup-android-mac.sh scripts/install-android.sh 'scripts/Install Android.command' dist/package-cli/
 	cp scripts/install-service.sh scripts/setup-android-server.sh scripts/install-android.sh scripts/android-tools.py deploy/systemd/okestra-service.service dist/package-service/
-	sed 's|](expo.md)|](docs/expo.md)|g; s|](android.md)|](docs/android.md)|g' docs/android.md > dist/package-service/ANDROID.md
-	sed 's|](expo.md)|](docs/expo.md)|g; s|](android.md)|](docs/android.md)|g' docs/expo.md > dist/package-service/EXPO.md
+	sed 's|](expo.md)|](docs/expo.md)|g; s|](android.md)|](docs/android.md)|g; s|](archive/|](docs/archive/|g' docs/android.md > dist/package-service/ANDROID.md
+	sed 's|](expo.md)|](docs/expo.md)|g; s|](android.md)|](docs/android.md)|g; s|](archive/|](docs/archive/|g' docs/expo.md > dist/package-service/EXPO.md
 	cp docs/android.md docs/expo.md dist/package-service/docs/
+	cp docs/archive/*.md dist/package-service/docs/archive/
 	cp dist/okestra-linux-arm64 dist/package-cli/okestra
 	tar -C dist/package-cli -czf dist/okestra_$(VERSION)_linux_arm64.tar.gz .
 	cp dist/okestra-linux-amd64 dist/package-cli/okestra

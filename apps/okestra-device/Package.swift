@@ -8,7 +8,14 @@ let package = Package(
     .target(name: "DeviceCore", path: "Core"),
     .target(
       name: "DeviceTransport", dependencies: ["DeviceCore"], path: ".",
-      exclude: ["Core", "Tests", "OkestraDevice.swift", "Info.plist"], sources: ["Transport.swift"]),
+      exclude: [
+        "Archive", "Core", "Tests", "EditorTests", "Android", "Resources", "DeviceNetwork.swift",
+        "DeviceConvenience.swift", "ScreenshotEditor.swift", "ScreenshotEditorModel.swift",
+        "WorkspaceCanvas.swift", "VideoReviewModel.swift", "VideoReviewWorkspace.swift",
+        "OkestraDevice.swift",
+        "DeviceWorkspace.swift",
+        "DeveloperTools.swift", "DeveloperWorkspace.swift", "Info.plist",
+      ], sources: ["Transport.swift", "DeveloperTransport.swift", "DeviceNetworkTransport.swift"]),
     .testTarget(
       name: "DeviceCoreTests", dependencies: ["DeviceCore", "DeviceTransport"], path: "Tests"),
   ])

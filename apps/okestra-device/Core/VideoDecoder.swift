@@ -5,7 +5,9 @@ public final class VideoDecoder {
   private var sps: Data?, pps: Data?
   private var format: CMVideoFormatDescription?
   public init() {}
-  public func consume(_ data: Data, config: Bool, keyframe: Bool) throws -> CMSampleBuffer? {
+  public func consume(_ data: Data, config: Bool, keyframe: Bool, timestampMicroseconds: UInt64 = 0)
+    throws -> CMSampleBuffer?
+  {
     let units = try H264.units(data)
     var changed = false
     for unit in units {
@@ -55,7 +57,9 @@ public final class VideoDecoder {
     }
     guard status == noErr else { throw DeviceError.message("Cannot copy video frame") }
     var timing = CMSampleTimingInfo(
-      duration: .invalid, presentationTimeStamp: .zero, decodeTimeStamp: .invalid)
+      duration: .invalid,
+      presentationTimeStamp: CMTime(value: Int64(timestampMicroseconds), timescale: 1_000_000),
+      decodeTimeStamp: .invalid)
     var sample: CMSampleBuffer?
     var size = frame.count
     status = CMSampleBufferCreateReady(

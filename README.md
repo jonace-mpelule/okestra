@@ -30,9 +30,15 @@ The service needs no database and no cloud control plane. Runtime state is delib
 - Save and switch between named server profiles.
 - Verify the complete connection with `okestra doctor`.
 
-## Flutter, Expo development builds, and remote Android
+## Remote Android devices
 
-Okestra can also run Flutter debug sessions on the server, connect the remote emulator to local ADB, and open the custom native Okestra Device app on your Mac. Android is opt-in and currently targets one developer and one x86_64 Linux emulator. Expo development builds also support server-side dependency installation, Android builds, private Metro, Fast Refresh, and development-menu controls. See [Expo setup and usage](docs/expo.md) and [Android setup and usage](docs/android.md) for server setup, menu bar controls, source sync, and acceptance checks.
+Okestra Device offloads Android emulators to your Linux server. The custom native Mac app provides a live, interactive screen with device skins, saved Pixel 7/Pixel 9 profiles, CPU/RAM configuration and local ADB access. Build with your own local tools and target the remote device; no project manifest, Flutter SDK or Node installation is required on the server. One emulator runs at a time per server.
+
+Select **This Mac** in the viewer to use a physical Android phone connected directly over USB or Wi-Fi, with the same screen and controls. USB uses the phone's debugging authorization; Android 11+ wireless setup includes pairing-code and connection-address fields. Physical-device mode works without a paired Okestra server.
+
+The **Developer** menu adds APK installation, an app launcher, filtered Logcat/crash signals, saved deep links and development ports, screen recording, bug-report exports and Android audio playback on the Mac. **Cmd-K** opens the command palette.
+
+See [Android setup and usage](docs/android.md). The earlier server-side Flutter/Expo build and source-sync workflows are [archived behind an explicit opt-in](docs/archive/README.md); their code is retained, and their controls have been removed from the Mac apps.
 
 ## Guided installation on your private network
 

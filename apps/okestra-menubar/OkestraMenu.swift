@@ -5,8 +5,6 @@ import SwiftUI
 private struct ProjectFile: Decodable {
     let name: String
     let services: [String: Service]?
-    let android: AndroidConfig?
-    struct AndroidConfig: Decodable { let path: String; let avd: String; let framework: String? }
     struct Service: Decodable {
         let ports: [String]?
     }
@@ -15,7 +13,6 @@ private struct ProjectFile: Decodable {
 private struct AndroidStatus: Decodable {
     let enabled: Bool
     let device: String
-    let sessions: [String: String]
     let local_serial: String
 }
 
@@ -45,8 +42,6 @@ final class Controller: ObservableObject {
     @Published var hasAndroid = false
     @Published var androidStatus = "Checking Android…"
     @Published var androidDevice = "stopped"
-    @Published var androidSession = "stopped"
-    @Published var androidFramework = "flutter"
     @Published var androidSerial = ""
     @AppStorage("projectFolder") var projectFolder = ""
 
@@ -85,8 +80,7 @@ final class Controller: ObservableObject {
         let folder = projectFolder
         let project = manifest
         projectName = project?.name ?? ""
-        hasAndroid = project?.android != nil
-        androidFramework = project?.android?.framework ?? "flutter"
+        hasAndroid = true
         if hasAndroid {
             run(["android", "status", "--json"]) { [weak self] text, code in
                 guard let self, self.projectFolder == folder else { return }
@@ -94,9 +88,8 @@ final class Controller: ObservableObject {
                     self.androidStatus = "Android unavailable · run Check setup"; return
                 }
                 self.androidDevice = result.device
-                self.androidSession = result.sessions[project?.name ?? ""] ?? "stopped"
                 self.androidSerial = result.local_serial
-                self.androidStatus = result.enabled ? "Device: \(result.device) · App: \(self.androidSession)" : "Enable Android on the server"
+                self.androidStatus = result.enabled ? "Device: \(result.device)" : "Enable Android on the server"
             }
         }
         hasPorts = project?.services?.values.contains { !($0.ports ?? []).isEmpty } ?? false
@@ -195,7 +188,9 @@ final class Controller: ObservableObject {
             var environment = ProcessInfo.processInfo.environment
             environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (environment["PATH"] ?? "/usr/bin:/bin")
             process.environment = environment
-            if !folder.isEmpty { process.currentDirectoryURL = URL(fileURLWithPath: folder) }
+            if arguments.first == "android" {
+                process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+            } else if !folder.isEmpty { process.currentDirectoryURL = URL(fileURLWithPath: folder) }
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = pipe
@@ -377,39 +372,21 @@ struct OkestraMenu: View {
 
     private var androidCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Android", systemImage: "iphone").font(.subheadline.weight(.semibold))
+            Label("Remote Android", systemImage: "iphone").font(.subheadline.weight(.semibold))
             Text(controller.androidStatus).font(.caption).foregroundStyle(.secondary)
             if !controller.androidSerial.isEmpty {
                 Text("Local ADB: \(controller.androidSerial)").font(.caption2).textSelection(.enabled)
             }
             HStack {
-                Button("Start device") { controller.action(["android", "start"], title: "Start Android") }
-                    .disabled(controller.androidDevice == "ready" || controller.androidDevice == "booting")
-                Button("Open device") { controller.action(["android", "view"], title: "Android viewer") }
-                    .disabled(controller.androidDevice != "ready")
-                Button("Run app") { controller.action(["android", "run"], title: "Run app") }
-                    .disabled(controller.androidDevice != "ready" || ["running","building","installing","starting","stopping","needs_rebuild"].contains(controller.androidSession))
-            }
-            HStack {
-                Button("Reload") { controller.action(["android", "reload"], title: "Reload app") }
-                Button(controller.androidFramework == "expo" ? "Rebuild" : "Restart") { controller.action(["android", "restart"], title: controller.androidFramework == "expo" ? "Rebuild Expo development client" : "Restart Flutter") }
+                Button("Open devices") { controller.action(["android", "view"], title: "Okestra Device") }
                 Menu("More") {
-                    if controller.androidFramework == "expo" { Button("Open development menu") { controller.action(["android", "dev-menu"], title: "Expo development menu") } }
-                    Button("Enable sync on save") { controller.action(["android", "watch"], title: "Watch app source") }
-                    Button("Stop sync on save") { controller.action(["android", "unwatch"], title: "Stop watching source") }
-                    Button("Sync logs") { controller.action(["android", "watch-logs"], title: "Source sync logs") }
-                    Button("App logs") { controller.action(["android", "logs"], title: "App logs") }
+                    Button("Connect local ADB") { controller.action(["android", "connect"], title: "Connect Android") }
+                    Button("Disconnect local ADB") { controller.action(["android", "disconnect"], title: "Disconnect Android") }
                     Button("Device logs") { controller.action(["android", "device-logs"], title: "Android logs") }
                     Button("Check setup") { controller.action(["android", "doctor"], title: "Android diagnostics") }
-                    Divider()
-                    Button("Stop app") { controller.action(["android", "stop"], title: "Stop app") }
-                    Button("Disconnect local device") { controller.action(["android", "disconnect"], title: "Disconnect Android") }
-                    Button("Stop device") { controller.action(["android", "device-stop"], title: "Stop Android device") }
                 }
             }
-        }
-        .disabled(controller.busy)
-        .cardStyle(card, border: border)
+        }.disabled(controller.busy).cardStyle(card, border: border)
     }
 
     private var activityCard: some View {
